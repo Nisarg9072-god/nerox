@@ -1,0 +1,249 @@
+"""
+app/services/storage_service.py
+================================
+Storage abstraction layer for the Nerox platform.
+
+Design
+------
+StorageBackend is an abstract base class that defines three operations:
+
+    save_file(upload_file, unique_filename) -> (storage_path, size_bytes)
+    delete_file(storage_path)
+    get_file_url(storage_path) -> url
+
+Two concrete implementations are provided:
+
+    LocalStorageBackend  — default; stores files under storage/uploads/
+    S3StorageBackend     — stub; fill in boto3 calls when AWS S3 is needed
+
+The factory function get_storage() reads STORAGE_TYPE from settings and
+returns a module-level singleton so the backend is initialised exactly once.
+
+Switching local → S3
+---------------------
+1. pip install boto3
+2. Add to .env:
+       STORAGE_TYPE=s3
+       AWS_ACCESS_KEY_ID=...
+       AWS_SECRET_ACCESS_KEY=...
+       S3_BUCKET_NAME=nerox-assets
+3. Implement S3StorageBackend.save_file / delete_file / get_file_url.
+4. Restart the server — no API-layer changes required.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from pathlib import Path
+
+from fastapi import UploadFile
+
+from app.core.config import settings
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Directory constant (used by main.py for StaticFiles mount)
+# ---------------------------------------------------------------------------
+
+UPLOAD_DIR = Path("storage/uploads")
+
+
+def ensure_upload_dir() -> None:
+    """Create the local upload directory tree if it does not already exist."""
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Abstract interface
+# ---------------------------------------------------------------------------
+
+
+class StorageBackend(ABC):
+    """Contract every storage provider must fulfil."""
+
+    @abstractmethod
+    async def save_file(
+        self,
+        upload_file: UploadFile,
+        unique_filename: str,
+    ) -> tuple[str, int]:
+        """
+        Persist the uploaded file under *unique_filename*.
+
+        The caller is responsible for seeking upload_file back to 0 before
+        calling this method if it has already been partially read.
+
+        Args:
+            upload_file:     FastAPI UploadFile object, positioned at byte 0.
+            unique_filename: Collision-safe filename (UUID-based).
+
+        Returns:
+            (storage_path, size_bytes)
+              storage_path — opaque path string to store in MongoDB.
+              size_bytes   — total bytes written.
+
+        Raises:
+            ValueError — file exceeds the configured MAX_FILE_SIZE_MB.
+            IOError    — any I/O failure during writing.
+        """
+        ...
+
+    @abstractmethod
+    def delete_file(self, file_path: str) -> None:
+        """
+        Remove a previously saved file.
+
+        Args:
+            file_path: The storage_path returned by save_file.
+        """
+        ...
+
+    @abstractmethod
+    def get_file_url(self, file_path: str) -> str:
+        """
+        Return an accessible URL for the given file_path.
+
+        Args:
+            file_path: The storage_path returned by save_file.
+
+        Returns:
+            Fully-qualified URL string clients can use to fetch the file.
+        """
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Local filesystem implementation
+# ---------------------------------------------------------------------------
+
+
+class LocalStorageBackend(StorageBackend):
+    """
+    Stores files on the local filesystem under *upload_dir*.
+    Served to clients as /uploads/<filename> via StaticFiles.
+    """
+
+    _CHUNK_SIZE = 1024 * 1024  # 1 MB read buffer
+
+    def __init__(self, upload_dir: Path, base_url: str) -> None:
+        self.upload_dir = upload_dir
+        self.base_url = base_url.rstrip("/")
+        self.upload_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("LocalStorageBackend ready — dir: %s", self.upload_dir.resolve())
+
+    async def save_file(
+        self,
+        upload_file: UploadFile,
+        unique_filename: str,
+    ) -> tuple[str, int]:
+        max_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
+        dest_path = self.upload_dir / unique_filename
+        total_bytes = 0
+
+        try:
+            with dest_path.open("wb") as fh:
+                while True:
+                    chunk = await upload_file.read(self._CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    total_bytes += len(chunk)
+                    if total_bytes > max_bytes:
+                        fh.close()
+                        dest_path.unlink(missing_ok=True)
+                        raise ValueError(
+                            f"File exceeds the maximum allowed size of "
+                            f"{settings.MAX_FILE_SIZE_MB} MB."
+                        )
+                    fh.write(chunk)
+
+        except ValueError:
+            raise
+        except OSError as exc:
+            dest_path.unlink(missing_ok=True)
+            raise IOError(f"Failed to write file to disk: {exc}") from exc
+
+        logger.debug(
+            "Saved %s — %d bytes → %s", unique_filename, total_bytes, dest_path
+        )
+        return str(dest_path.resolve()), total_bytes
+
+    def delete_file(self, file_path: str) -> None:
+        path = Path(file_path)
+        if path.exists():
+            path.unlink()
+            logger.info("Deleted file: %s", file_path)
+        else:
+            logger.warning("delete_file: path not found — %s", file_path)
+
+    def get_file_url(self, file_path: str) -> str:
+        filename = Path(file_path).name
+        return f"{self.base_url}/uploads/{filename}"
+
+
+# ---------------------------------------------------------------------------
+# AWS S3 stub — implement when ready
+# ---------------------------------------------------------------------------
+
+
+class S3StorageBackend(StorageBackend):
+    """
+    AWS S3 storage backend (not yet implemented).
+
+    To activate:
+        1. pip install boto3
+        2. Set STORAGE_TYPE=s3 and AWS credentials in .env
+        3. Implement the three methods below.
+    """
+
+    async def save_file(
+        self, upload_file: UploadFile, unique_filename: str
+    ) -> tuple[str, int]:
+        raise NotImplementedError(
+            "S3StorageBackend is not yet implemented. "
+            "Set STORAGE_TYPE=local or implement this class."
+        )
+
+    def delete_file(self, file_path: str) -> None:
+        raise NotImplementedError("S3StorageBackend.delete_file is not implemented.")
+
+    def get_file_url(self, file_path: str) -> str:
+        raise NotImplementedError("S3StorageBackend.get_file_url is not implemented.")
+
+
+# ---------------------------------------------------------------------------
+# Factory — module-level singleton
+# ---------------------------------------------------------------------------
+
+_storage: StorageBackend | None = None
+
+
+def get_storage() -> StorageBackend:
+    """
+    Return the configured storage backend singleton.
+
+    Reads STORAGE_TYPE from settings:
+        'local'  → LocalStorageBackend  (default)
+        's3'     → S3StorageBackend     (stub — implement before using)
+
+    Any unknown value falls back to 'local' with a warning.
+    """
+    global _storage
+    if _storage is None:
+        stype = getattr(settings, "STORAGE_TYPE", "local").lower()
+
+        if stype == "s3":
+            logger.info("Initialising S3StorageBackend")
+            _storage = S3StorageBackend()
+        else:
+            if stype != "local":
+                logger.warning(
+                    "Unknown STORAGE_TYPE='%s' — falling back to 'local'.", stype
+                )
+            _storage = LocalStorageBackend(
+                upload_dir=UPLOAD_DIR,
+                base_url=getattr(settings, "BASE_URL", "http://localhost:8000"),
+            )
+
+    return _storage
