@@ -6,6 +6,7 @@ import { Button } from '../../components/ui/button';
 import { useEffect, useState } from 'react';
 import { analyticsService, type AlertItem } from '../../../services/analyticsService';
 import { toast } from 'sonner';
+import { useWsEvent } from '../../../context/WebSocketContext';
 
 const ALERT_META: Record<string, { color: string; label: string; badge: 'destructive' | 'default' | 'secondary' | 'outline' }> = {
   critical_risk:      { color: 'border-destructive',   label: 'Critical Risk',       badge: 'destructive' },
@@ -35,6 +36,12 @@ export default function Alerts() {
   };
 
   useEffect(load, []);
+
+  useWsEvent('alert_created', (event) => {
+    const alert = event.data?.alert as AlertItem | undefined;
+    if (!alert) return;
+    setAlerts((prev) => [alert, ...prev.filter((a) => a.alert_id !== alert.alert_id)].slice(0, 50));
+  });
 
   const handleResolve = async (alertId: string) => {
     setResolving(alertId);

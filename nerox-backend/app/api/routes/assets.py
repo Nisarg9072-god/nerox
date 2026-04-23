@@ -205,7 +205,7 @@ async def upload_asset(
 
     # ── Queue background tasks (production TaskQueue) ─────────────────────────
     if fingerprint_id:
-        task_queue.enqueue(
+        fp_task_id = task_queue.enqueue(
             process_fingerprint,
             task_name=f"fingerprint:{asset_id}",
             max_retries=2,
@@ -214,9 +214,14 @@ async def upload_asset(
             file_path=file_path,
             file_type=file_type,
         )
+        await db[FINGERPRINTS_COL].update_one(
+            {"_id": ObjectId(fingerprint_id)},
+            {"$set": {"queue_task_id": fp_task_id}},
+        )
+        logger.info("Fingerprint job queued: %s", asset_id)
 
     if watermark_id:
-        task_queue.enqueue(
+        wm_task_id = task_queue.enqueue(
             process_watermark,
             task_name=f"watermark:{asset_id}",
             max_retries=2,
@@ -226,6 +231,11 @@ async def upload_asset(
             file_path=file_path,
             file_type=file_type,
         )
+        await db[WATERMARKS_COL].update_one(
+            {"_id": ObjectId(watermark_id)},
+            {"$set": {"queue_task_id": wm_task_id}},
+        )
+        logger.info("Watermark job queued: %s", asset_id)
 
     logger.info(
         "Upload accepted — asset=%s fp_id=%s wm_id=%s user=%s file='%s' size=%d type=%s",

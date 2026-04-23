@@ -40,6 +40,7 @@ Visibility
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import cv2
@@ -61,6 +62,8 @@ WM_BITS     = 64      # Watermark token length in bits (8 bytes)
 WM_REPEATS  = 3       # Repetitions for majority-vote error correction
 TOTAL_BITS  = WM_BITS * WM_REPEATS  # 192 bits embedded total
 MIN_DIM     = 128     # Minimum image / frame dimension in pixels
+HASH_BITS   = 64      # First 64 bits of SHA-256(wm_token) for integrity checks
+PAYLOAD_BITS = WM_BITS + HASH_BITS
 
 
 # ---------------------------------------------------------------------------
@@ -127,9 +130,14 @@ def embed_watermark(image_bgr: np.ndarray, wm_token: bytes) -> np.ndarray:
             f"Minimum required for watermarking: {MIN_DIM}×{MIN_DIM} px."
         )
 
-    # Tile watermark bits 3× for error correction
-    wm_bits   = bytes_to_bits(wm_token)           # (64,)  boolean
-    full_bits = np.tile(wm_bits, WM_REPEATS)      # (192,) boolean
+    # Payload = raw token bits + hash-prefix bits. Repeating across all blocks
+    # makes the scheme substantially more resilient to crop and resize.
+    token_bits = bytes_to_bits(wm_token)  # (64,)
+    hash_bits = np.unpackbits(
+        np.frombuffer(hashlib.sha256(wm_token).digest()[:8], dtype=np.uint8)
+    ).astype(bool)  # (64,)
+    payload = np.concatenate([token_bits, hash_bits], axis=0)  # (128,)
+    legacy_bits = np.tile(token_bits, WM_REPEATS)              # (192,)
 
     # Work on Y (luminance) channel
     ycbcr   = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2YCrCb)
@@ -138,8 +146,7 @@ def embed_watermark(image_bgr: np.ndarray, wm_token: bytes) -> np.ndarray:
     blocks_h     = h // BLOCK_SIZE
     blocks_w     = w // BLOCK_SIZE
     total_blocks = blocks_h * blocks_w
-    n_embed      = min(len(full_bits), total_blocks)
-
+    n_embed = total_blocks
     for idx in range(n_embed):
         bi  = idx // blocks_w
         bj  = idx % blocks_w
@@ -152,7 +159,13 @@ def embed_watermark(image_bgr: np.ndarray, wm_token: bytes) -> np.ndarray:
         coeff = dct_block[EMBED_ROW, EMBED_COL]
         # Hard-set to ±ALPHA — guarantees correct sign regardless of original
         # image content.  This is more robust than max/min on noisy images.
-        dct_block[EMBED_ROW, EMBED_COL] = ALPHA if full_bits[idx] else -ALPHA
+        if idx < len(legacy_bits):
+            # Keep old positional encoding in the first region for backward
+            # extraction compatibility while adding spread payload afterwards.
+            bit = legacy_bits[idx]
+        else:
+            bit = payload[(idx - len(legacy_bits)) % PAYLOAD_BITS]
+        dct_block[EMBED_ROW, EMBED_COL] = ALPHA if bit else -ALPHA
 
         y_float[r0 : r0 + BLOCK_SIZE, c0 : c0 + BLOCK_SIZE] = cv2.idct(dct_block)
 
@@ -196,7 +209,7 @@ def extract_watermark(image_bgr: np.ndarray) -> tuple[bytes, float]:
     blocks_h     = h // BLOCK_SIZE
     blocks_w     = w // BLOCK_SIZE
     total_blocks = blocks_h * blocks_w
-    n_extract    = min(TOTAL_BITS, total_blocks)
+    n_extract = total_blocks
 
     raw_bits = np.zeros(n_extract, dtype=np.int32)
 
@@ -211,30 +224,85 @@ def extract_watermark(image_bgr: np.ndarray) -> tuple[bytes, float]:
         coeff     = dct_block[EMBED_ROW, EMBED_COL]
         raw_bits[idx] = 1 if coeff > 0 else 0
 
-    # Need at least WM_BITS blocks to decode anything useful
-    if n_extract < WM_BITS:
+    # Need at least one full payload window to decode robustly.
+    if n_extract < PAYLOAD_BITS:
         logger.warning(
-            "Too few blocks (%d) for watermark extraction — need ≥ %d",
-            n_extract, WM_BITS,
+            "Too few blocks (%d) for robust watermark extraction — need ≥ %d",
+            n_extract, PAYLOAD_BITS,
         )
-        return b"\x00" * (WM_BITS // 8), 0.0
+        return _extract_watermark_legacy(image_bgr)
 
-    # Reshape into (n_reps, WM_BITS) and majority-vote per bit
-    n_complete  = (n_extract // WM_BITS) * WM_BITS
-    bits_matrix = raw_bits[:n_complete].reshape(-1, WM_BITS)  # (n_reps, 64)
-    n_reps      = bits_matrix.shape[0]
+    # Crop can shift block alignment; try all payload phase shifts and pick
+    # the candidate whose token/hash relation is most self-consistent.
+    best_token = b"\x00" * (WM_BITS // 8)
+    best_conf = 0.0
+    phase_candidates = min(PAYLOAD_BITS, n_extract)
+    for shift in range(phase_candidates):
+        votes = np.zeros(PAYLOAD_BITS, dtype=np.float32)
+        counts = np.zeros(PAYLOAD_BITS, dtype=np.float32)
+        for j, bit in enumerate(raw_bits):
+            k = (j + shift) % PAYLOAD_BITS
+            votes[k] += bit
+            counts[k] += 1.0
+        means = np.divide(votes, np.maximum(counts, 1.0))
+        decoded = (means >= 0.5).astype(np.uint8)
+        token = bits_to_bytes(decoded[:WM_BITS].astype(bool))
+        expected_hash_bits = np.unpackbits(
+            np.frombuffer(hashlib.sha256(token).digest()[:8], dtype=np.uint8)
+        ).astype(np.uint8)
+        observed_hash_bits = decoded[WM_BITS:PAYLOAD_BITS]
+        hash_consistency = float((expected_hash_bits == observed_hash_bits).mean())
+        vote_stability = float(np.mean(np.abs(means - 0.5) * 2.0))
+        confidence = round((0.75 * hash_consistency) + (0.25 * vote_stability), 4)
+        if confidence > best_conf:
+            best_conf = confidence
+            best_token = token
 
-    votes     = bits_matrix.sum(axis=0)                         # (64,) sums
-    majority  = (votes > n_reps / 2).astype(np.uint8)
-    unanimous = (votes == n_reps) | (votes == 0)
-    confidence = float(unanimous.mean())
+    legacy_token, legacy_conf = _extract_watermark_legacy(image_bgr)
+    if (best_token == (b"\x00" * (WM_BITS // 8))) or (legacy_conf >= best_conf):
+        return legacy_token, legacy_conf
 
-    token = bits_to_bytes(majority.astype(bool))
+    token = best_token
+    confidence = best_conf
 
     logger.debug(
-        "Watermark extracted — token=%s confidence=%.3f reps=%d",
-        token.hex(), confidence, n_reps,
+        "Watermark extracted — token=%s confidence=%.3f candidates=%d blocks=%d",
+        token.hex(), confidence, phase_candidates, n_extract,
     )
+    return token, confidence
+
+
+def _extract_watermark_legacy(image_bgr: np.ndarray) -> tuple[bytes, float]:
+    """
+    Legacy extractor kept for backwards compatibility with older assets.
+    """
+    h, w = image_bgr.shape[:2]
+    ycbcr = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2YCrCb)
+    y_float = ycbcr[:, :, 0].astype(np.float32)
+    blocks_h = h // BLOCK_SIZE
+    blocks_w = w // BLOCK_SIZE
+    total_blocks = blocks_h * blocks_w
+    n_extract = min(TOTAL_BITS, total_blocks)
+    raw_bits = np.zeros(n_extract, dtype=np.int32)
+    for idx in range(n_extract):
+        bi = idx // blocks_w
+        bj = idx % blocks_w
+        r0 = bi * BLOCK_SIZE
+        c0 = bj * BLOCK_SIZE
+        block = y_float[r0:r0 + BLOCK_SIZE, c0:c0 + BLOCK_SIZE]
+        dct_block = cv2.dct(block.copy())
+        coeff = dct_block[EMBED_ROW, EMBED_COL]
+        raw_bits[idx] = 1 if coeff > 0 else 0
+    if n_extract < WM_BITS:
+        return b"\x00" * (WM_BITS // 8), 0.0
+    n_complete = (n_extract // WM_BITS) * WM_BITS
+    bits_matrix = raw_bits[:n_complete].reshape(-1, WM_BITS)
+    n_reps = bits_matrix.shape[0]
+    votes = bits_matrix.sum(axis=0)
+    majority = (votes > n_reps / 2).astype(np.uint8)
+    unanimous = (votes == n_reps) | (votes == 0)
+    confidence = float(unanimous.mean())
+    token = bits_to_bytes(majority.astype(bool))
     return token, confidence
 
 

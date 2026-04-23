@@ -28,9 +28,11 @@ Design decisions
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 from typing import Optional
 
+from bson import ObjectId
 from app.core.logger import get_logger
 from app.db.mongodb import get_sync_database as get_database
 
@@ -186,6 +188,18 @@ def verify_file(file_path: str, file_type: str) -> VerificationResult:
 
     # ── Step 2: Null token guard (all-zero → no watermark found) ─────────────
     if token_hex == "0" * 16:
+        hybrid = _hybrid_fingerprint_match(file_path=file_path, file_type=file_type)
+        if hybrid and hybrid.get("similarity", 0.0) >= 0.98:
+            return VerificationResult(
+                verified=True,
+                wm_token_hex=token_hex,
+                confidence=float(hybrid["similarity"]),
+                asset_id=hybrid.get("asset_id"),
+                user_id=hybrid.get("user_id"),
+                watermark_id_db=None,
+                method="hybrid-watermark-fingerprint",
+                error="Watermark token destroyed; verified via near-identical fingerprint match.",
+            )
         return VerificationResult(
             verified=False,
             wm_token_hex=token_hex,
@@ -201,6 +215,39 @@ def verify_file(file_path: str, file_type: str) -> VerificationResult:
     )
 
     if doc is None:
+        # Fuzzy lookup for robustness against mild distortions.
+        fuzzy_doc = _fuzzy_watermark_match(db, wm_token, min_similarity=0.70)
+        if fuzzy_doc and confidence >= 0.45:
+            logger.info(
+                "Watermark fuzzy match — token=%s ~ asset=%s similarity=%.3f",
+                token_hex, fuzzy_doc.get("asset_id"), fuzzy_doc.get("token_similarity", 0.0),
+            )
+            return VerificationResult(
+                verified=True,
+                wm_token_hex=token_hex,
+                confidence=max(confidence, float(fuzzy_doc.get("token_similarity", 0.0))),
+                asset_id=fuzzy_doc.get("asset_id"),
+                user_id=fuzzy_doc.get("user_id"),
+                watermark_id_db=str(fuzzy_doc.get("_id")),
+                method="DCT-frequency-domain-fuzzy",
+            )
+
+        # Hybrid fallback: use fingerprint similarity when watermark is weak.
+        hybrid = _hybrid_fingerprint_match(file_path=file_path, file_type=file_type)
+        if hybrid and hybrid.get("similarity", 0.0) >= 0.98:
+            return VerificationResult(
+                verified=True,
+                wm_token_hex=token_hex,
+                confidence=float(hybrid["similarity"]),
+                asset_id=hybrid.get("asset_id"),
+                user_id=hybrid.get("user_id"),
+                watermark_id_db=None,
+                method="hybrid-watermark-fingerprint",
+                error=(
+                    "Watermark token degraded; verified via high fingerprint similarity."
+                ),
+            )
+
         logger.info("No DB match for token=%s", token_hex)
         return VerificationResult(
             verified=False,
@@ -226,3 +273,61 @@ def verify_file(file_path: str, file_type: str) -> VerificationResult:
         user_id=doc.get("user_id"),
         watermark_id_db=str(doc["_id"]),
     )
+
+
+def _hamming_similarity_hex(a_hex: str, b_hex: str) -> float:
+    try:
+        a = bytes.fromhex(a_hex)
+        b = bytes.fromhex(b_hex)
+        n = min(len(a), len(b))
+        if n == 0:
+            return 0.0
+        total_bits = n * 8
+        dist = 0
+        for x, y in zip(a[:n], b[:n]):
+            dist += (x ^ y).bit_count()
+        return max(0.0, 1.0 - (dist / total_bits))
+    except Exception:
+        return 0.0
+
+
+def _fuzzy_watermark_match(db, wm_token: bytes, min_similarity: float = 0.70) -> Optional[dict]:
+    token_hex = wm_token.hex()
+    token_hash_hex = hashlib.sha256(wm_token).hexdigest()
+    best: Optional[dict] = None
+    best_sim = 0.0
+    cursor = db[WATERMARKS_COL].find(
+        {"status": "completed", "wm_token": {"$ne": None}},
+        projection={"_id": 1, "asset_id": 1, "user_id": 1, "wm_token": 1, "watermark_hash": 1},
+    )
+    for row in cursor:
+        token_sim = _hamming_similarity_hex(token_hex, str(row.get("wm_token") or ""))
+        hash_sim = _hamming_similarity_hex(token_hash_hex[:16], str(row.get("watermark_hash") or "")[:16])
+        sim = max(token_sim, hash_sim)
+        if sim > best_sim:
+            best_sim = sim
+            best = dict(row)
+            best["token_similarity"] = sim
+    if best and best_sim >= min_similarity:
+        return best
+    return None
+
+
+def _hybrid_fingerprint_match(file_path: str, file_type: str) -> Optional[dict]:
+    try:
+        from app.services.fingerprint_service import generate_embedding_for_detection
+        from app.services.vector_service import get_vector_index
+        emb = generate_embedding_for_detection(file_path, file_type)
+        matches = get_vector_index().search_similar(emb, top_k=1)
+        if not matches:
+            return None
+        top = matches[0]
+        db = get_database()
+        asset_doc = db["assets"].find_one({"_id": ObjectId(top["asset_id"])}, {"user_id": 1})
+        return {
+            "asset_id": top.get("asset_id"),
+            "similarity": float(top.get("similarity", 0.0)),
+            "user_id": str(asset_doc.get("user_id")) if asset_doc and asset_doc.get("user_id") else None,
+        }
+    except Exception:
+        return None

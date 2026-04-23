@@ -55,6 +55,7 @@ def create_detection(
     user_id:            str,
     source_type:        str,
     similarity_score:   float,
+    matched_asset_id:   Optional[str] = None,
     platform_name:      str      = "unknown",
     source_url:         Optional[str] = None,
     watermark_verified: bool     = False,
@@ -99,6 +100,7 @@ def create_detection(
     now = datetime.now(timezone.utc)
     doc = {
         "asset_id":            asset_id,
+        "matched_asset_id":    matched_asset_id,
         "user_id":             user_id,
         "source_type":         source_type,
         "platform_name":       platform_name.lower().strip(),
@@ -129,6 +131,27 @@ def create_detection(
         "Detection created — id=%s asset=%s risk=%d(%s) source=%s wm=%s",
         detection_id, asset_id, score, label, source_type, watermark_verified,
     )
+    try:
+        from app.services.ws_manager import emit_detection_found
+        emit_detection_found(
+            user_id=user_id,
+            asset_id=asset_id,
+            similarity=similarity_score,
+            source=source_type,
+            source_url=source_url or "",
+            platform=platform_name,
+            detection={
+                "detection_id": detection_id,
+                "asset_id": asset_id,
+                "matched_asset_id": matched_asset_id,
+                "similarity_score": round(similarity_score, 4),
+                "confidence": conf,
+                "risk_score": score,
+                "risk_label": label,
+            },
+        )
+    except Exception as exc:
+        logger.warning("detection_found emit failed for detection=%s: %s", detection_id, exc)
 
     # ── 4. Trigger alert checks (non-fatal) ──────────────────────────────────
     try:

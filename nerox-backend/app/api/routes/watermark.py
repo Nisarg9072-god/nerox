@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -30,6 +31,7 @@ from app.schemas.watermark_schema import OwnershipMatch, VerifyResponse
 from app.services.detection_service import create_detection
 from app.services.file_service import detect_file_type, validate_file
 from app.services.watermark_verify import verify_file
+from app.services.ws_manager import emit_watermark_verified
 
 logger  = get_logger(__name__)
 router  = APIRouter()
@@ -128,6 +130,14 @@ async def verify_watermark(
             user_id      = result.user_id or "",
             watermark_id = result.watermark_id_db or "",
         )
+        if result.user_id and result.watermark_id_db:
+            emit_watermark_verified(
+                user_id=result.user_id,
+                asset_id=result.asset_id,
+                watermark_id=result.watermark_id_db,
+                confidence=result.confidence,
+                confidence_label=result.confidence_label,
+            )
         # Append audit entry (non-fatal)
         try:
             db = get_database()
@@ -169,12 +179,20 @@ async def verify_watermark(
 
     return VerifyResponse(
         verified          = result.verified,
+        is_verified       = result.verified,
         confidence        = round(result.confidence, 4),
         confidence_label  = result.confidence_label,
+        strength          = result.confidence_label,
         ownership         = ownership,
+        asset_id          = result.asset_id if result.verified else None,
         wm_token_detected = result.wm_token_hex,
         watermark_method  = result.method,
         error             = result.error,
+        message           = (
+            f"Ownership verified for asset {result.asset_id}."
+            if result.verified and result.asset_id
+            else (result.error or "Watermark not verified.")
+        ),
     )
 
 

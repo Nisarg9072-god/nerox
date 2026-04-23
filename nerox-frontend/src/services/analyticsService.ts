@@ -175,4 +175,67 @@ export const analyticsService = {
     const { data } = await api.post(`/analytics/alerts/${alertId}/resolve`);
     return data;
   },
+
+  /** Phase 2.6: Get detection analytics insights. */
+  async getDetectionInsights(days = 30): Promise<DetectionInsightsResponse> {
+    const { data } = await api.get<DetectionInsightsResponse>(
+      `/analytics/detection-insights?days=${days}`,
+    );
+    return data;
+  },
 };
+
+// ── Phase 2.6: Detection Insights Types ────────────────────────────────────
+
+export interface DailyTrendPoint {
+  date: string;
+  count: number;
+  avg_similarity: number;
+  avg_risk: number;
+}
+
+export interface PlatformInsight {
+  platform: string;
+  count: number;
+  percentage: number;
+  avg_similarity: number;
+  avg_risk: number;
+  high_matches: number;
+}
+
+export interface TopAttackedAsset {
+  asset_id: string;
+  filename: string;
+  file_type: string;
+  detection_count: number;
+  avg_similarity: number;
+  max_risk: number;
+  platforms: string[];
+  last_detected: string | null;
+}
+
+export interface ConfidenceDistribution {
+  high: number;
+  medium: number;
+  low: number;
+}
+
+export interface SourceDistItem {
+  source: string;
+  count: number;
+}
+
+export interface DetectionInsightsResponse {
+  window_days: number;
+  total_detections: number;
+  avg_similarity: number;
+  daily_trend: DailyTrendPoint[];
+  platform_breakdown: PlatformInsight[];
+  top_attacked_assets: TopAttackedAsset[];
+  confidence_distribution: ConfidenceDistribution;
+  source_distribution: SourceDistItem[];
+  total_auto_scans: number;
+  completed_auto_scans: number;
+  generated_at: string;
+}
+

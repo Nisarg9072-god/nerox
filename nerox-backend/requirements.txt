@@ -9,6 +9,10 @@ pydantic[email]>=2.10.0
 email-validator>=2.1.1
 pydantic-settings>=2.3.0
 python-multipart>=0.0.9
+redis>=5.0.0
+rq>=1.16.2
+boto3>=1.35.0
+playwright>=1.52.0
 
 # ── Phase 3: AI Fingerprinting & Detection Engine ──────────────────────────
 # Install with: pip install torch torchvision opencv-python faiss-cpu numpy
@@ -21,3 +25,9 @@ numpy>=1.24.0
 # ── Phase 5: Invisible Watermarking + Ownership Trace ──────────────────────
 # Uses existing deps: opencv-python (DCT transforms), numpy, hashlib/hmac (stdlib)
 # No additional packages required.
+
+# ── Phase 2.5: Auto-Detection Engine ──────────────────────────────────────
+# Uses existing deps: numpy, opencv-python, faiss-cpu, torch, torchvision
+# Ingestion layer uses stdlib: urllib, html.parser, json
+# No additional packages required.
+

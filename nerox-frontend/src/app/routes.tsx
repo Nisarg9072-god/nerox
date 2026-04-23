@@ -12,26 +12,37 @@
  */
 
 import { createBrowserRouter, Navigate, Outlet } from 'react-router';
+import { lazy, Suspense, type ComponentType } from 'react';
 import { useAuth } from '../context/AuthContext';
-import Landing from './pages/Landing';
-import Features from './pages/Features';
-import Demo from './pages/Demo';
-import Pricing from './pages/Pricing';
-import About from './pages/About';
-import Contact from './pages/Contact';
-import Login from './pages/Login';
-import Register from './pages/Register';
-import ForgotPassword from './pages/ForgotPassword';
-import ResetPassword from './pages/ResetPassword';
 import { DashboardLayout } from './components/DashboardLayout';
-import DashboardHome from './pages/dashboard/DashboardHome';
-import Upload from './pages/dashboard/Upload';
-import Assets from './pages/dashboard/Assets';
-import Detections from './pages/dashboard/Detections';
-import Analytics from './pages/dashboard/Analytics';
-import Alerts from './pages/dashboard/Alerts';
-import Verification from './pages/dashboard/Verification';
-import Settings from './pages/dashboard/Settings';
+
+const Landing = lazy(() => import('./pages/Landing'));
+const Features = lazy(() => import('./pages/Features'));
+const Demo = lazy(() => import('./pages/Demo'));
+const Pricing = lazy(() => import('./pages/Pricing'));
+const About = lazy(() => import('./pages/About'));
+const Contact = lazy(() => import('./pages/Contact'));
+const Login = lazy(() => import('./pages/Login'));
+const Register = lazy(() => import('./pages/Register'));
+const ForgotPassword = lazy(() => import('./pages/ForgotPassword'));
+const ResetPassword = lazy(() => import('./pages/ResetPassword'));
+const DashboardHome = lazy(() => import('./pages/dashboard/DashboardHome'));
+const Upload = lazy(() => import('./pages/dashboard/Upload'));
+const Assets = lazy(() => import('./pages/dashboard/Assets'));
+const Detections = lazy(() => import('./pages/dashboard/Detections'));
+const Analytics = lazy(() => import('./pages/dashboard/Analytics'));
+const Alerts = lazy(() => import('./pages/dashboard/Alerts'));
+const Verification = lazy(() => import('./pages/dashboard/Verification'));
+const Settings = lazy(() => import('./pages/dashboard/Settings'));
+const AutoDetection = lazy(() => import('./pages/dashboard/AutoDetection'));
+
+function withSuspense(Component: ComponentType) {
+  return (
+    <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading…</div>}>
+      <Component />
+    </Suspense>
+  );
+}
 
 /**
  * ProtectedRoute wrapper — redirects to /login if not authenticated.
@@ -56,16 +67,16 @@ function ProtectedDashboard() {
 
 export const router = createBrowserRouter([
   // ── Public routes ─────────────────────────────────────────────────────────
-  { path: '/',               Component: Landing },
-  { path: '/features',       Component: Features },
-  { path: '/demo',           Component: Demo },
-  { path: '/pricing',        Component: Pricing },
-  { path: '/about',          Component: About },
-  { path: '/contact',        Component: Contact },
-  { path: '/login',          Component: Login },
-  { path: '/register',       Component: Register },
-  { path: '/forgot-password', Component: ForgotPassword },
-  { path: '/reset-password',  Component: ResetPassword },
+  { path: '/',               element: withSuspense(Landing) },
+  { path: '/features',       element: withSuspense(Features) },
+  { path: '/demo',           element: withSuspense(Demo) },
+  { path: '/pricing',        element: withSuspense(Pricing) },
+  { path: '/about',          element: withSuspense(About) },
+  { path: '/contact',        element: withSuspense(Contact) },
+  { path: '/login',          element: withSuspense(Login) },
+  { path: '/register',       element: withSuspense(Register) },
+  { path: '/forgot-password', element: withSuspense(ForgotPassword) },
+  { path: '/reset-password',  element: withSuspense(ResetPassword) },
 
   // ── Protected dashboard routes (nested layout) ────────────────────────────
   {
@@ -75,14 +86,15 @@ export const router = createBrowserRouter([
         path: '/dashboard',
         element: <ProtectedDashboard />,
         children: [
-          { index: true,           Component: DashboardHome },
-          { path: 'upload',        Component: Upload },
-          { path: 'assets',        Component: Assets },
-          { path: 'detections',    Component: Detections },
-          { path: 'analytics',     Component: Analytics },
-          { path: 'alerts',        Component: Alerts },
-          { path: 'verification',  Component: Verification },
-          { path: 'settings',      Component: Settings },
+          { index: true,           element: withSuspense(DashboardHome) },
+          { path: 'upload',        element: withSuspense(Upload) },
+          { path: 'assets',        element: withSuspense(Assets) },
+          { path: 'detections',    element: withSuspense(Detections) },
+          { path: 'auto-detect',   element: withSuspense(AutoDetection) },
+          { path: 'analytics',     element: withSuspense(Analytics) },
+          { path: 'alerts',        element: withSuspense(Alerts) },
+          { path: 'verification',  element: withSuspense(Verification) },
+          { path: 'settings',      element: withSuspense(Settings) },
         ],
       },
     ],

@@ -197,19 +197,41 @@ class S3StorageBackend(StorageBackend):
         3. Implement the three methods below.
     """
 
+    def __init__(self) -> None:
+        self.bucket = settings.S3_BUCKET_NAME
+        self.endpoint = settings.S3_ENDPOINT_URL or None
+        self.public_base = settings.S3_PUBLIC_BASE_URL.rstrip("/") if settings.S3_PUBLIC_BASE_URL else ""
+        if not self.bucket:
+            raise RuntimeError("S3_BUCKET_NAME is required when STORAGE_TYPE=s3")
+        try:
+            import boto3  # type: ignore
+            self._client = boto3.client(
+                "s3",
+                region_name=settings.S3_REGION,
+                endpoint_url=self.endpoint,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"S3 backend init failed: {exc}") from exc
+
     async def save_file(
         self, upload_file: UploadFile, unique_filename: str
     ) -> tuple[str, int]:
-        raise NotImplementedError(
-            "S3StorageBackend is not yet implemented. "
-            "Set STORAGE_TYPE=local or implement this class."
-        )
+        max_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
+        data = await upload_file.read()
+        if len(data) > max_bytes:
+            raise ValueError(f"File exceeds the maximum allowed size of {settings.MAX_FILE_SIZE_MB} MB.")
+        self._client.put_object(Bucket=self.bucket, Key=unique_filename, Body=data, ContentType=upload_file.content_type or "application/octet-stream")
+        return unique_filename, len(data)
 
     def delete_file(self, file_path: str) -> None:
-        raise NotImplementedError("S3StorageBackend.delete_file is not implemented.")
+        self._client.delete_object(Bucket=self.bucket, Key=file_path)
 
     def get_file_url(self, file_path: str) -> str:
-        raise NotImplementedError("S3StorageBackend.get_file_url is not implemented.")
+        if self.public_base:
+            return f"{self.public_base}/{file_path}"
+        if self.endpoint:
+            return f"{self.endpoint.rstrip('/')}/{self.bucket}/{file_path}"
+        return f"https://{self.bucket}.s3.{settings.S3_REGION}.amazonaws.com/{file_path}"
 
 
 # ---------------------------------------------------------------------------

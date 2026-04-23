@@ -45,6 +45,9 @@ ALLOWED_EXTENSIONS: dict[str, tuple[str, list[str]]] = {
     ".mp4":  ("video", ["video/mp4"]),
     ".mov":  ("video", ["video/quicktime", "video/mp4"]),
 }
+_BLOCKED_EXTENSIONS = {
+    ".exe", ".bat", ".cmd", ".ps1", ".sh", ".php", ".js", ".jar", ".com", ".scr", ".msi"
+}
 
 # ---------------------------------------------------------------------------
 # Magic-byte signatures for anti-spoofing verification
@@ -128,6 +131,14 @@ async def validate_file(upload_file: UploadFile) -> None:
         ValueError: On any validation failure (human-readable message).
     """
     original_name: str = upload_file.filename or ""
+    parts = [p.lower() for p in Path(original_name).name.split(".") if p]
+    if len(parts) >= 2:
+        # block double-extension payloads like file.jpg.exe
+        trailing = f".{parts[-1]}"
+        if trailing in _BLOCKED_EXTENSIONS:
+            raise ValueError("Executable or script files are not allowed.")
+        if len(parts) > 2 and any(f".{p}" in _BLOCKED_EXTENSIONS for p in parts[1:]):
+            raise ValueError("Suspicious multi-extension filename is not allowed.")
     ext = Path(original_name).suffix.lower()
 
     # ── 1. Extension check ───────────────────────────────────────────────────

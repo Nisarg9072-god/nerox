@@ -1,6 +1,6 @@
 import { ReactNode, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
-import { Shield, Home, Upload, FolderOpen, AlertTriangle, BarChart3, Bell, FileCheck, Settings, LogOut, Menu, X } from 'lucide-react';
+import { Shield, Home, Upload, FolderOpen, AlertTriangle, BarChart3, Bell, FileCheck, Settings, LogOut, Menu, X, Radar } from 'lucide-react';
 import { Button } from './ui/button';
 import { ThemeToggle } from './ThemeToggle';
 import { useAuth } from '../../context/AuthContext';
@@ -11,6 +11,7 @@ const navigation = [
   { name: 'Upload', href: '/dashboard/upload', icon: Upload },
   { name: 'Assets', href: '/dashboard/assets', icon: FolderOpen },
   { name: 'Detections', href: '/dashboard/detections', icon: AlertTriangle },
+  { name: 'Auto Detect', href: '/dashboard/auto-detect', icon: Radar },
   { name: 'Analytics', href: '/dashboard/analytics', icon: BarChart3 },
   { name: 'Alerts', href: '/dashboard/alerts', icon: Bell },
   { name: 'Verification', href: '/dashboard/verification', icon: FileCheck },

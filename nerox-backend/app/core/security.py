@@ -133,6 +133,7 @@ def decode_access_token(token: str) -> dict[str, Any]:
 
 def create_refresh_token(
     subject: str | Any,
+    token_version: int = 0,
     expires_delta: timedelta | None = None,
 ) -> str:
     """
@@ -158,6 +159,7 @@ def create_refresh_token(
     payload: dict[str, Any] = {
         "sub": str(subject),
         "type": "refresh",
+        "tv": int(token_version),
         "iat": datetime.now(timezone.utc),
         "exp": expire,
     }

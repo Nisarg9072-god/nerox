@@ -30,6 +30,7 @@ from jose import JWTError
 
 from app.core.config import settings
 from app.core.dependencies import get_current_user
+from app.core.rate_limiter import login_rate_limiter
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -201,6 +202,7 @@ async def change_password(
         {"_id": user_id},
         {"$set": {
             "hashed_password": new_hash,
+            "token_version": int(current_user.get("token_version", 0)) + 1,
             "updated_at": datetime.now(timezone.utc),
         }},
     )
@@ -326,6 +328,7 @@ async def reset_password(payload: ResetPasswordRequest) -> ResetPasswordResponse
         {
             "$set": {
                 "hashed_password": new_hash,
+                "token_version": int(user_doc.get("token_version", 0)) + 1,
                 "updated_at": now,
             },
             "$unset": {
@@ -402,6 +405,7 @@ async def register_user(payload: RegisterRequest) -> RegisterResponse:
         "email": payload.email.lower(),          # normalise to lowercase
         "hashed_password": hashed_pw,
         "is_active": True,
+        "token_version": 0,
         "created_at": now,
         "updated_at": now,
     }
@@ -465,6 +469,13 @@ async def login_user(payload: LoginRequest) -> TokenResponse:
     """
     db = get_database()
     users = db[USERS_COLLECTION]
+    rl_key = payload.email.lower().strip()
+    if not login_rate_limiter.is_allowed(rl_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts. Please wait and try again.",
+            headers={"Retry-After": "60"},
+        )
 
     # --- 1. Fetch user ---
     user_doc = await users.find_one({"email": payload.email.lower()})
@@ -490,8 +501,9 @@ async def login_user(payload: LoginRequest) -> TokenResponse:
 
     # --- 4. Issue JWTs ---
     user_id = str(user_doc["_id"])
+    token_version = int(user_doc.get("token_version", 0))
     access_token = create_access_token(subject=user_id)
-    refresh_token = create_refresh_token(subject=user_id)
+    refresh_token = create_refresh_token(subject=user_id, token_version=token_version)
 
     logger.info("Successful login — user_id: %s", user_id)
 
@@ -572,9 +584,25 @@ async def refresh_access_token(payload: RefreshRequest) -> TokenResponse:
             detail="This account has been deactivated.",
         )
 
+    token_version = int(user_doc.get("token_version", 0))
+    token_version_claim = int(token_payload.get("tv", -1))
+    if token_version_claim != token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token was rotated. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # rotate refresh token version (single-use-ish semantics)
+    new_version = token_version + 1
+    await db[USERS_COLLECTION].update_one(
+        {"_id": user_doc["_id"]},
+        {"$set": {"token_version": new_version, "updated_at": datetime.now(timezone.utc)}},
+    )
+
     # --- 3. Issue new token pair ---
     new_access = create_access_token(subject=user_id)
-    new_refresh = create_refresh_token(subject=user_id)
+    new_refresh = create_refresh_token(subject=user_id, token_version=new_version)
 
     logger.info("Token refreshed — user_id: %s", user_id)
 

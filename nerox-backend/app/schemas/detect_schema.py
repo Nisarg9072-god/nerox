@@ -18,6 +18,10 @@ class DetectionMatch(BaseModel):
         ...,
         description="MongoDB ObjectId of the matching asset.",
     )
+    matched_asset_id: str = Field(
+        ...,
+        description="MongoDB ObjectId of the matching asset (explicit alias).",
+    )
     similarity: float = Field(
         ...,
         ge=0.0,
@@ -27,6 +31,24 @@ class DetectionMatch(BaseModel):
     match_strength: str = Field(
         ...,
         description="'strong' (≥ 0.90) or 'possible' (0.70 – 0.90).",
+    )
+    similarity_score: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Alias of similarity score for compatibility.",
+    )
+    confidence: str = Field(
+        ...,
+        description="Derived confidence label: high | medium.",
+    )
+    user_id: Optional[str] = Field(
+        default=None,
+        description="Owner user id of the matched asset.",
+    )
+    filename: Optional[str] = Field(
+        default=None,
+        description="Filename of the matched asset.",
     )
 
 

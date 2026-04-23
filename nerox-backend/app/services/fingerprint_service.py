@@ -44,6 +44,7 @@ from app.services.embedding_service import (
 )
 from app.services.image_processor import get_image_processor
 from app.services.video_processor import get_video_processor
+from app.services.ws_manager import emit_fingerprint_completed, emit_fingerprint_failed
 
 logger = get_logger(__name__)
 
@@ -124,6 +125,8 @@ def process_fingerprint(
     db      = get_sync_database()
     fp_oid  = ObjectId(fingerprint_id)
     a_oid   = ObjectId(asset_id)
+    fp_doc = db[FINGERPRINTS_COL].find_one({"_id": fp_oid}, {"user_id": 1}) or {}
+    user_id = str(fp_doc.get("user_id", "")) if fp_doc.get("user_id") else ""
 
     # ── Step 1 + 2: Mark both records as 'processing' ──────────────────────
     db[FINGERPRINTS_COL].update_one(
@@ -136,7 +139,7 @@ def process_fingerprint(
     )
 
     logger.info(
-        "Fingerprinting started — fingerprint_id=%s asset_id=%s type=%s",
+        "Fingerprint started — fingerprint_id=%s asset_id=%s type=%s",
         fingerprint_id, asset_id, file_type,
     )
 
@@ -189,14 +192,17 @@ def process_fingerprint(
         )
 
         logger.info(
-            "Fingerprinting complete — id=%s asset=%s frames=%d dim=%d time=%.1fms",
+            "Fingerprint completed — id=%s asset=%s frames=%d dim=%d time=%.1fms",
             fingerprint_id, asset_id, frame_count, len(embedding_list), elapsed_ms,
         )
+        if user_id:
+            emit_fingerprint_completed(user_id=user_id, asset_id=asset_id, fingerprint_id=fingerprint_id)
 
         # ── Step 6: Update FAISS index (non-fatal) ────────────────────────
         try:
             from app.services.vector_service import get_vector_index
             get_vector_index().add_vector(asset_id, embedding_list)
+            logger.info("Vector added to FAISS: %s", asset_id)
             logger.debug("FAISS index updated — asset=%s", asset_id)
         except Exception as faiss_exc:
             logger.warning(
@@ -209,6 +215,10 @@ def process_fingerprint(
         elapsed_ms = (time.perf_counter() - t_start) * 1_000
         error_msg  = str(exc)
 
+        logger.exception(
+            "Fingerprint failed: %s (id=%s asset=%s)",
+            exc, fingerprint_id, asset_id,
+        )
         logger.exception(
             "Fingerprinting FAILED — id=%s asset=%s: %s",
             fingerprint_id, asset_id, exc,
@@ -233,6 +243,13 @@ def process_fingerprint(
             logger.error(
                 "Failed to persist failure state for fingerprint_id=%s: %s",
                 fingerprint_id, db_exc,
+            )
+        if user_id:
+            emit_fingerprint_failed(
+                user_id=user_id,
+                asset_id=asset_id,
+                fingerprint_id=fingerprint_id,
+                reason=error_msg,
             )
         raise  # Re-raise so TaskQueue can handle retry
 

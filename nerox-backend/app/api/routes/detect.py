@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -31,6 +32,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 
 from app.core.dependencies import get_current_user
 from app.core.logger import get_logger
+from app.core.rate_limiter import detect_rate_limiter
 from app.db.mongodb import get_database, get_sync_database
 from app.schemas.detect_schema import DetectionMatch, DetectionResponse
 from app.services.detection_service import create_detection
@@ -100,6 +102,13 @@ async def detect_similarity(
     6. Return matches above threshold.
     """
     user_id  = str(current_user["_id"])
+    logger.info("Detection started — user=%s top_k=%d", user_id, top_k)
+    if not detect_rate_limiter.is_allowed(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded for detection requests.",
+            headers={"Retry-After": "60"},
+        )
     embedding: list[float]
     exclude_id: Optional[str] = None
     query_asset_id: Optional[str] = None
@@ -135,6 +144,7 @@ async def detect_similarity(
                 embedding = await asyncio.to_thread(
                     generate_embedding_for_detection, str(tmp_path), file_type
                 )
+                logger.info("Embedding generated — mode=file user=%s", user_id)
             except RuntimeError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -192,6 +202,7 @@ async def detect_similarity(
         embedding       = doc["fingerprint"]
         exclude_id      = asset_id
         query_asset_id  = asset_id
+        logger.info("Embedding generated — mode=asset user=%s asset_id=%s", user_id, asset_id)
 
         logger.info(
             "detect (asset mode) — user=%s asset_id=%s", user_id, asset_id
@@ -199,6 +210,8 @@ async def detect_similarity(
 
     # ── Search FAISS ───────────────────────────────────────────────────────────
     vector_index = get_vector_index()
+    # Keep API-process FAISS in sync with worker-completed fingerprints.
+    vector_index.load_from_db()
 
     if vector_index.total == 0:
         logger.warning("detect: FAISS index is empty — no matches possible.")
@@ -213,6 +226,26 @@ async def detect_similarity(
         top_k=top_k,
         exclude_asset_id=exclude_id,
     )
+    if raw_matches:
+        match_ids = [ObjectId(m["asset_id"]) for m in raw_matches if ObjectId.is_valid(m.get("asset_id", ""))]
+        if match_ids:
+            asset_docs = await get_database()["assets"].find(
+                {"_id": {"$in": match_ids}},
+                {"_id": 1, "user_id": 1, "filename": 1},
+            ).to_list(length=len(match_ids))
+            by_id = {str(d["_id"]): d for d in asset_docs}
+            for m in raw_matches:
+                doc = by_id.get(m.get("asset_id", ""))
+                if doc:
+                    m["user_id"] = doc.get("user_id")
+                    m["filename"] = doc.get("filename")
+    if raw_matches:
+        logger.info(
+            "Similarity computed — top match score: %.4f",
+            float(raw_matches[0].get("similarity", 0.0)),
+        )
+    else:
+        logger.info("Similarity computed — no matches above threshold")
 
     matches = [DetectionMatch(**m) for m in raw_matches]
 
@@ -220,15 +253,17 @@ async def detect_similarity(
     for m in raw_matches:
         match_asset_id = m.get("asset_id", "")
         match_user_id  = m.get("user_id",  user_id)
+        owner_asset_id = query_asset_id or match_asset_id
         try:
             create_detection(
-                asset_id         = match_asset_id,
+                asset_id         = owner_asset_id,
+                matched_asset_id = match_asset_id,
                 user_id          = match_user_id,
                 source_type      = "detect",
                 similarity_score = m.get("similarity", 0.0),
-                platform_name    = "unknown",
+                platform_name    = m.get("platform_name", "unknown"),
                 detected_by_user = user_id,
-                confidence_label = m.get("match_strength", "low"),
+                confidence_label = m.get("confidence", m.get("match_strength", "low")),
             )
         except Exception as exc:
             logger.warning(
@@ -244,4 +279,215 @@ async def detect_similarity(
         query_asset_id=query_asset_id,
         total_matches=len(matches),
         matches=matches,
+    )
+
+
+# ===========================================================================
+# Phase 2.5: Auto-Detection Endpoints
+# ===========================================================================
+
+from app.schemas.auto_detect_schema import (
+    StartAutoDetectRequest,
+    StartAutoDetectResponse,
+    DetectionJobItem,
+    DetectionJobListResponse,
+    DetectionJobDetailResponse,
+    DetectionJobMatchResult,
+)
+from app.services.auto_detect_service import create_detection_job, run_detection_job
+from app.services.task_queue import task_queue
+from app.models.detection_job_model import DETECTION_JOBS_COL
+from app.core.config import settings
+
+
+def _job_doc_to_item(doc: dict) -> DetectionJobItem:
+    """Convert a raw MongoDB detection_job document to the API schema."""
+    return DetectionJobItem(
+        job_id=str(doc["_id"]),
+        status=doc.get("status", "unknown"),
+        source=doc.get("source", ""),
+        query=doc.get("query", ""),
+        total_scanned=doc.get("total_scanned", 0),
+        matches_found=doc.get("matches_found", 0),
+        started_at=doc["started_at"].isoformat() if doc.get("started_at") else None,
+        completed_at=doc["completed_at"].isoformat() if doc.get("completed_at") else None,
+        error=doc.get("error"),
+        created_at=doc["created_at"].isoformat() if doc.get("created_at") else "",
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /detect/auto/start
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/auto/start",
+    response_model=StartAutoDetectResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Start an automated detection job",
+    description=(
+        "Triggers a background detection job that scans external sources "
+        "(YouTube, web) for content similar to the user's protected assets. "
+        "The job runs asynchronously — poll `GET /detect/jobs/{id}` for progress."
+    ),
+)
+async def start_auto_detection(
+    body: StartAutoDetectRequest,
+    current_user: Annotated[dict, Depends(get_current_user)],
+) -> StartAutoDetectResponse:
+    """
+    Create and dispatch an auto-detection job.
+
+    1. Validate the source type.
+    2. Create a job document in MongoDB (status=pending).
+    3. Dispatch to the TaskQueue for background execution.
+    4. Return the job_id immediately.
+    """
+    user_id = str(current_user["_id"])
+
+    # Validate source
+    valid_sources = {"youtube", "web"}
+    if body.source not in valid_sources:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid source '{body.source}'. Must be one of: {', '.join(valid_sources)}",
+        )
+
+    # Create job
+    job_id = await create_detection_job(
+        user_id=user_id,
+        source=body.source,
+        query=body.query,
+        asset_ids=body.asset_ids,
+    )
+
+    # Dispatch to background worker
+    task_id = task_queue.enqueue(
+        run_detection_job,
+        job_id=job_id,
+        task_name=f"auto_detect_{job_id[:8]}",
+        max_retries=2,
+        timeout_sec=float(settings.AUTO_SCAN_TIMEOUT_SEC),
+    )
+    await get_database()[DETECTION_JOBS_COL].update_one(
+        {"_id": ObjectId(job_id)},
+        {"$set": {
+            "queue_task_id": task_id,
+            "status": "pending",
+            "retries": 0,
+            "max_retries": 2,
+            "queued_at": datetime.now(timezone.utc),
+        }},
+    )
+
+    logger.info(
+        "Auto-detection job dispatched — id=%s source=%s user=%s",
+        job_id, body.source, user_id,
+    )
+
+    return StartAutoDetectResponse(
+        job_id=job_id,
+        status="pending",
+        message=f"Detection job created. Scanning {body.source} for: '{body.query}'",
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /detect/jobs
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/jobs",
+    response_model=DetectionJobListResponse,
+    summary="List detection jobs",
+    description="Returns all detection jobs for the authenticated user, sorted by creation date (newest first).",
+)
+async def list_detection_jobs(
+    current_user: Annotated[dict, Depends(get_current_user)],
+    limit: int = 20,
+    skip: int = 0,
+) -> DetectionJobListResponse:
+    """List detection jobs for the current user."""
+    user_id = str(current_user["_id"])
+    db = get_database()
+
+    total = await db[DETECTION_JOBS_COL].count_documents({"user_id": user_id})
+
+    cursor = (
+        db[DETECTION_JOBS_COL]
+        .find({"user_id": user_id})
+        .sort("created_at", -1)
+        .skip(skip)
+        .limit(min(limit, 50))
+    )
+
+    jobs = []
+    async for doc in cursor:
+        jobs.append(_job_doc_to_item(doc))
+
+    return DetectionJobListResponse(total=total, jobs=jobs)
+
+
+# ---------------------------------------------------------------------------
+# GET /detect/jobs/{job_id}
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/jobs/{job_id}",
+    response_model=DetectionJobDetailResponse,
+    summary="Get detection job details",
+    description="Returns full details of a specific detection job, including match results.",
+    responses={
+        404: {"description": "Job not found."},
+        403: {"description": "Job belongs to another user."},
+    },
+)
+async def get_detection_job(
+    job_id: str,
+    current_user: Annotated[dict, Depends(get_current_user)],
+) -> DetectionJobDetailResponse:
+    """Get detailed information about a specific detection job."""
+    user_id = str(current_user["_id"])
+
+    try:
+        oid = ObjectId(job_id)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"'{job_id}' is not a valid job ID.",
+        )
+
+    db = get_database()
+    doc = await db[DETECTION_JOBS_COL].find_one({"_id": oid})
+
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Detection job not found.",
+        )
+
+    if doc["user_id"] != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. This job belongs to another user.",
+        )
+
+    # Convert results to schema
+    results = [
+        DetectionJobMatchResult(**r)
+        for r in doc.get("results", [])
+    ]
+
+    return DetectionJobDetailResponse(
+        job_id=str(doc["_id"]),
+        status=doc.get("status", "unknown"),
+        source=doc.get("source", ""),
+        query=doc.get("query", ""),
+        total_scanned=doc.get("total_scanned", 0),
+        matches_found=doc.get("matches_found", 0),
+        results=results,
+        started_at=doc["started_at"].isoformat() if doc.get("started_at") else None,
+        completed_at=doc["completed_at"].isoformat() if doc.get("completed_at") else None,
+        error=doc.get("error"),
+        created_at=doc["created_at"].isoformat() if doc.get("created_at") else "",
     )

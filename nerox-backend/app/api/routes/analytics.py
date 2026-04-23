@@ -66,6 +66,67 @@ ALERTS_COL     = "alerts"
 
 
 # ---------------------------------------------------------------------------
+# GET /analytics/detection-insights  (Phase 2.6)
+# ---------------------------------------------------------------------------
+
+from app.schemas.detection_insights_schema import (
+    DetectionInsightsResponse,
+    DailyTrendPoint,
+    PlatformInsight,
+    TopAttackedAsset,
+    ConfidenceDistribution,
+    SourceDistribution,
+)
+from app.services.detection_insights import get_detection_insights
+
+
+@router.get(
+    "/detection-insights",
+    response_model=DetectionInsightsResponse,
+    summary="Detection analytics insights",
+    description=(
+        "Returns rich detection analytics including:\\n\\n"
+        "- **Daily trend**: detection count + avg similarity + avg risk per day\\n"
+        "- **Platform breakdown**: per-platform stats with high-match counts\\n"
+        "- **Top attacked assets**: most frequently detected assets\\n"
+        "- **Average similarity**: overall mean similarity score\\n"
+        "- **Confidence distribution**: HIGH / MEDIUM / LOW match counts\\n"
+        "- **Source distribution**: detection counts by source type\\n"
+        "- **Auto-scan stats**: total and completed auto-detection jobs\\n\\n"
+        "All data is scoped to the authenticated user."
+    ),
+)
+async def detection_insights(
+    current_user: Annotated[dict, Depends(get_current_user)],
+    days: int = Query(default=30, ge=1, le=365, description="Window in days."),
+) -> DetectionInsightsResponse:
+    user_id = str(current_user["_id"])
+
+    try:
+        data = await asyncio.to_thread(get_detection_insights, user_id, days)
+    except Exception as exc:
+        logger.exception("Detection insights failed — user=%s: %s", user_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate detection insights.",
+        )
+
+    return DetectionInsightsResponse(
+        window_days=data["window_days"],
+        total_detections=data["total_detections"],
+        avg_similarity=data["avg_similarity"],
+        daily_trend=[DailyTrendPoint(**d) for d in data["daily_trend"]],
+        platform_breakdown=[PlatformInsight(**p) for p in data["platform_breakdown"]],
+        top_attacked_assets=[TopAttackedAsset(**a) for a in data["top_attacked_assets"]],
+        confidence_distribution=ConfidenceDistribution(**data["confidence_distribution"]),
+        source_distribution=[SourceDistribution(**s) for s in data["source_distribution"]],
+        total_auto_scans=data["total_auto_scans"],
+        completed_auto_scans=data["completed_auto_scans"],
+        generated_at=data["generated_at"],
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /analytics/dashboard
 # ---------------------------------------------------------------------------
 

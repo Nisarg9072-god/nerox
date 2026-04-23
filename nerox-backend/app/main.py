@@ -1,5 +1,5 @@
 """
-Nerox Backend — FastAPI Entry Point  (v7.0.0 — Phase 2: Enterprise-Grade Upgrade)
+Nerox Backend — FastAPI Entry Point  (v8.0.0 — Phase 2.6: Real-Time Intelligence)
 ==================================================================================
 Startup sequence:
   1. Ensure upload directory exists (static files mount).
@@ -8,15 +8,19 @@ Startup sequence:
   4. Pre-load FAISS index from all completed embeddings in MongoDB.
 
 Shutdown:
-  5. Gracefully shut down background TaskQueue.
-  6. Close MongoDB connections.
+  5. Stop the auto-detection scheduler.
+  6. Gracefully shut down background TaskQueue.
+  7. Close MongoDB connections.
+  8. Close WebSocket connections.
 """
 
 from contextlib import asynccontextmanager
+import asyncio
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -24,8 +28,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.routes import auth, assets
 from app.api.routes import analytics as analytics_router
 from app.api.routes import detect as detect_router
+from app.api.routes import system as system_router
 from app.api.routes import watermark as watermark_router
+from app.api.routes import ws as ws_router
 from app.core.config import settings
+from app.core.middleware import request_logging_middleware_factory
 from app.core.logger import get_logger
 from app.db.mongodb import connect_to_mongo, close_mongo_connection, get_sync_database
 from app.services.storage_service import ensure_upload_dir, UPLOAD_DIR
@@ -101,6 +108,23 @@ def _create_indexes() -> None:
 
         # ── password_reset_tokens (Phase 2) ───────────────────────────────
         ("users", [("reset_token_hash", ASCENDING)],              "idx_users_reset_token", False),
+
+        # ── detection_jobs (Phase 2.5) ────────────────────────────────────
+        ("detection_jobs", [("user_id", ASCENDING)],                                       "idx_dj_user_id",      False),
+        ("detection_jobs", [("status", ASCENDING)],                                        "idx_dj_status",       False),
+        ("detection_jobs", [("created_at", DESCENDING)],                                   "idx_dj_created_at",   False),
+        ("detection_jobs", [("user_id", ASCENDING), ("created_at", DESCENDING)],            "idx_dj_user_created", False),
+        ("background_jobs", [("job_id", ASCENDING)],                                        "idx_bj_job_id",       True),
+        ("background_jobs", [("status", ASCENDING)],                                        "idx_bj_status",       False),
+        ("background_jobs", [("created_at", DESCENDING)],                                   "idx_bj_created_at",   False),
+
+        # ── Phase 2.6: Enhanced detection indexes ────────────────────────────
+        ("detections", [("asset_id", ASCENDING)],                                          "idx_det_asset_id",     False),
+        ("detections", [("similarity_score", DESCENDING)],                                 "idx_det_similarity",   False),
+        ("detections", [("created_at", DESCENDING)],                                       "idx_det_created_at",   False),
+        ("detections", [("detected_at", DESCENDING)],                                      "idx_det_detected_at",  False),
+        ("detections", [("user_id", ASCENDING), ("detected_at", DESCENDING)],               "idx_det_user_date",    False),
+        ("detections", [("user_id", ASCENDING), ("asset_id", ASCENDING)],                   "idx_det_user_asset",   False),
     ]
 
     for collection, keys, name, unique in index_specs:
@@ -132,7 +156,7 @@ def _create_indexes() -> None:
             else:
                 raise   # unexpected OperationFailure — propagate
 
-    logger.info("MongoDB indexes verified (Phase 2 — includes unique constraints).")
+    logger.info("MongoDB indexes verified (Phase 2.6 — includes detection optimizations).")
 
 
 
@@ -154,10 +178,19 @@ async def lifespan(app: FastAPI):
     4. Shut down background TaskQueue.
     5. Close MongoDB connections.
     """
-    logger.info("Nerox API v7.0.0 starting up …")
+    logger.info("Nerox API v8.0.0 starting up …")
+    import time as _time
+    app.state.started_at_epoch = _time.time()
 
     await connect_to_mongo()
     _create_indexes()
+
+    # Register main loop for thread-safe WebSocket emissions
+    try:
+        from app.services.ws_manager import ws_manager
+        ws_manager.set_event_loop(asyncio.get_running_loop())
+    except Exception as exc:
+        logger.warning("WebSocket loop binding failed: %s", exc)
 
     # Pre-populate FAISS with all existing completed embeddings
     try:
@@ -167,11 +200,34 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("FAISS pre-load skipped: %s", exc)
 
-    logger.info("Phase 2: Enterprise-grade backend ready.")
+    # Phase 2.5: Start auto-detection scheduler
+    try:
+        from app.services.scheduler import start_scheduler
+        start_scheduler()
+    except Exception as exc:
+        logger.warning("Auto-detection scheduler failed to start: %s", exc)
+
+    logger.info("Phase 2.5: Auto-Detection Engine ready.")
+
+    # Phase 2.6: Initialize source registry
+    try:
+        from app.services.ingestion.registry import initialize_default_sources
+        initialize_default_sources()
+    except Exception as exc:
+        logger.warning("Source registry init failed: %s", exc)
+
+    logger.info("Phase 2.6: Real-Time Intelligence Layer ready.")
 
     yield
 
     logger.info("Nerox API shutting down …")
+
+    # Phase 2.5: Stop auto-detection scheduler
+    try:
+        from app.services.scheduler import stop_scheduler
+        await stop_scheduler()
+    except Exception as exc:
+        logger.warning("Scheduler shutdown error: %s", exc)
 
     # Graceful shutdown of background task system
     try:
@@ -191,24 +247,28 @@ app = FastAPI(
     title="Nerox API",
     description=(
         "## Nerox — AI-Powered Digital Asset Protection Platform\n\n"
-        "**v7.0.0 — Phase 2: Enterprise-Grade Backend Upgrade**\n\n"
+        "**v8.0.0 — Phase 2.6: Real-Time Intelligence & Scalable Detection**\n\n"
         "### Features\n"
         "- **JWT Authentication** — register, login, profile, password management\n"
         "- **File Upload** — images (jpg/png) and videos (mp4/mov)\n"
         "- **AI Fingerprinting** — ResNet50 2048-d embeddings; similarity search via FAISS\n"
         "- **Invisible Watermarking** — DCT frequency-domain; survives JPEG Q70+, resize, mild edits\n"
         "- **Ownership Trace** — `POST /watermark/verify` maps leaked content to original owner\n"
-        "- **Async Database** — Motor (non-blocking MongoDB)\n"
-        "- **Background Workers** — Production task queue with retry logic\n\n"
+        "- **Auto-Detection** — Scheduled crawling of YouTube + web for asset misuse\n"
+        "- **Real-Time Alerts** — WebSocket live notifications for detections\n"
+        "- **Detection Intelligence** — Priority scoring, smart match filtering, confidence classification\n"
+        "- **Background Workers** — Production task queue with parallel processing\n\n"
         "### Recommended Workflow\n"
         "1. `POST /auth/login` → Authorize\n"
         "2. `POST /assets/upload` → note `asset_id`, `fingerprint_id`, `watermark_id`\n"
         "3. `GET /assets/{id}/fingerprint-status` → poll until `completed`\n"
         "4. `GET /assets/{id}/watermark-status`   → poll until `completed`\n"
         "5. `POST /detect`            → similarity search\n"
-        "6. `POST /watermark/verify`  → ownership trace"
+        "6. `POST /detect/auto/start` → auto-scan external sources\n"
+        "7. `WS /ws/notifications`    → real-time WebSocket events\n"
+        "8. `POST /watermark/verify`  → ownership trace"
     ),
-    version="7.0.0",
+    version="8.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -219,7 +279,10 @@ app = FastAPI(
 # CORS
 # ---------------------------------------------------------------------------
 
-_CORS_ORIGINS = [origin.strip() for origin in settings.CORS_ORIGINS.split(",")]
+if settings.ENVIRONMENT.lower() == "production":
+    _CORS_ORIGINS = [origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()]
+else:
+    _CORS_ORIGINS = [origin.strip() for origin in settings.CORS_ORIGINS.split(",")]
 
 app.add_middleware(
     CORSMiddleware,
@@ -228,6 +291,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+allowed_hosts = [h.strip() for h in settings.ALLOWED_HOSTS.split(",") if h.strip()]
+if allowed_hosts:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+app.middleware("http")(request_logging_middleware_factory())
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +366,8 @@ app.include_router(assets.router,            prefix="/assets",     tags=["Assets
 app.include_router(detect_router.router,     prefix="/detect",     tags=["Detection"])
 app.include_router(watermark_router.router,  prefix="/watermark",  tags=["Watermark"])
 app.include_router(analytics_router.router,  prefix="/analytics",  tags=["Analytics"])
+app.include_router(ws_router.router,         prefix="/ws",         tags=["WebSocket"])
+app.include_router(system_router.router,     prefix="/system",     tags=["System"])
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +377,9 @@ app.include_router(analytics_router.router,  prefix="/analytics",  tags=["Analyt
 @app.get("/health", tags=["Health"], summary="Liveness probe")
 async def health_check() -> dict:
     """Returns server version, storage backend, FAISS index size, and watermark stats."""
+    mongo_ok = False
+    redis_ok = False
+    workers_ok = False
     try:
         from app.services.vector_service import get_vector_index
         faiss_vectors = get_vector_index().total
@@ -320,16 +392,37 @@ async def health_check() -> dict:
         db = get_database()
         wm_total     = await db["watermarks"].count_documents({})
         wm_completed = await db["watermarks"].count_documents({"status": "completed"})
+        await db.command("ping")
+        mongo_ok = True
     except Exception:
         wm_total = -1
         wm_completed = -1
 
+    try:
+        from app.services.task_queue import task_queue
+        metrics = task_queue.metrics()
+        redis_ok = True
+        workers_ok = metrics.get("active_workers", 0) > 0
+    except Exception:
+        metrics = {"active_workers": 0}
+
+    import time as _time
+    uptime_sec = int(_time.time() - app.state.started_at_epoch) if hasattr(app.state, "started_at_epoch") else 0
     return {
-        "status":           "ok",
+        "status":           "ok" if mongo_ok and redis_ok else "degraded",
         "service":          "nerox-api",
-        "version":          "7.0.0",
+        "version":          "8.0.0",
         "storage":          settings.STORAGE_TYPE,
         "faiss_vectors":    faiss_vectors,
+        "auto_detect":      bool(settings.YOUTUBE_API_KEY),
+        "websocket":        True,
         "wm_completed":     wm_completed,
         "wm_total":         wm_total,
+        "services": {
+            "mongodb": "ok" if mongo_ok else "down",
+            "redis": "ok" if redis_ok else "down",
+            "worker": "ok" if workers_ok else "down",
+        },
+        "active_workers": metrics.get("active_workers", 0),
+        "uptime": f"{uptime_sec}s",
     }

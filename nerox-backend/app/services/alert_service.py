@@ -98,6 +98,27 @@ def _create_alert(
         "Alert created — id=%s type=%s severity=%s asset=%s",
         alert_id, alert_type, severity, asset_id,
     )
+    logger.info("Alert created for asset: %s", asset_id)
+    try:
+        from app.services.ws_manager import emit_alert_created
+        emit_alert_created(
+            user_id=user_id,
+            alert_type=alert_type,
+            severity=severity,
+            asset_id=asset_id,
+            message=message,
+            alert={
+                "alert_id": alert_id,
+                "alert_type": alert_type,
+                "severity": severity,
+                "asset_id": asset_id,
+                "message": message,
+                "resolved": False,
+                "triggered_at": now.isoformat(),
+            },
+        )
+    except Exception:
+        pass
     return alert_id
 
 
@@ -124,9 +145,24 @@ def check_and_create_alerts(
     risk_score   = detection_doc["risk_score"]
     wm_verified  = detection_doc.get("watermark_verified", False)
     detection_id = detection_doc.get("id_str") or str(detection_doc.get("_id", ""))
+    similarity = float(detection_doc.get("similarity_score", 0.0))
+
+    # ── 0. First detection baseline alert ─────────────────────────────────────
+    if prior_count == 0:
+        _create_alert(
+            alert_type="first_detection",
+            asset_id=asset_id,
+            user_id=user_id,
+            severity="medium",
+            detection_id=detection_id,
+            message=(
+                f"First unauthorized detection found for asset {asset_id}. "
+                "Review and decide whether to monitor or escalate."
+            ),
+        )
 
     # ── 1. Critical risk ───────────────────────────────────────────────────────
-    if risk_score >= 76:
+    if risk_score >= 76 or (similarity >= 0.90 and prior_count >= 2):
         _create_alert(
             alert_type   = "critical_risk",
             asset_id     = asset_id,

@@ -31,6 +31,7 @@ from bson import ObjectId
 
 from app.core.logger import get_logger
 from app.db.mongodb import get_database, get_sync_database
+from app.services.ws_manager import emit_watermark_completed, emit_watermark_failed
 
 logger = get_logger(__name__)
 
@@ -108,7 +109,7 @@ def process_watermark(
     )
 
     logger.info(
-        "Watermarking started — wm_id=%s asset=%s file_type=%s",
+        "Watermark started — wm_id=%s asset=%s file_type=%s",
         watermark_doc_id, asset_id, file_type,
     )
 
@@ -151,9 +152,10 @@ def process_watermark(
         )
 
         logger.info(
-            "Watermarking complete — wm_id=%s asset=%s token=%s time=%.1fms",
+            "Watermark completed — wm_id=%s asset=%s token=%s time=%.1fms",
             watermark_doc_id, asset_id, wm_token.hex(), elapsed_ms,
         )
+        emit_watermark_completed(user_id=user_id, asset_id=asset_id, watermark_id=watermark_doc_id)
 
     except Exception as exc:
         # ── Failure path ──────────────────────────────────────────────────────
@@ -161,7 +163,7 @@ def process_watermark(
         error_msg  = str(exc)
 
         logger.exception(
-            "Watermarking FAILED — wm_id=%s asset=%s: %s",
+            "Watermark failed — wm_id=%s asset=%s: %s",
             watermark_doc_id, asset_id, exc,
         )
 
@@ -182,6 +184,12 @@ def process_watermark(
                 "Failed to persist watermark failure state for wm_id=%s: %s",
                 watermark_doc_id, db_exc,
             )
+        emit_watermark_failed(
+            user_id=user_id,
+            asset_id=asset_id,
+            watermark_id=watermark_doc_id,
+            reason=error_msg,
+        )
         raise  # Re-raise so TaskQueue can handle retry
 
 

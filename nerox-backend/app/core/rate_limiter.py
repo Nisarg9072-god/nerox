@@ -1,41 +1,20 @@
-"""
-app/core/rate_limiter.py
-========================
-In-memory sliding-window rate limiter.
+"""Redis-backed distributed rate limiter with in-memory fallback."""
 
-Algorithm
----------
-Each unique key (e.g. user_id) maps to a deque of monotonic timestamps.
-On every check:
-  1. Expired timestamps (older than the window) are discarded.
-  2. If the remaining count >= max_calls → deny and return False.
-  3. Otherwise, append the current timestamp and return True.
-
-Thread Safety
--------------
-A threading.Lock guards all deque mutations so the limiter is safe under
-FastAPI's default single-process threadpool.
-
-Limitations
------------
-State is per-process. In a multi-worker / Kubernetes deployment the limit
-is per-pod, not global.  Replace with a Redis-backed implementation for
-distributed rate limiting.
-
-Module-level singletons
------------------------
-  upload_rate_limiter  — 10 uploads / 60 seconds per user
-"""
+from __future__ import annotations
 
 import threading
 import time
 from collections import defaultdict, deque
 
+import redis
+
+from app.core.config import settings
+
 
 class SlidingWindowRateLimiter:
     """Sliding-window rate limiter keyed by arbitrary string identifiers."""
 
-    def __init__(self, max_calls: int, window_seconds: float) -> None:
+    def __init__(self, max_calls: int, window_seconds: float, scope: str) -> None:
         """
         Args:
             max_calls:       Max allowed calls within the window.
@@ -43,8 +22,14 @@ class SlidingWindowRateLimiter:
         """
         self.max_calls = max_calls
         self.window_seconds = window_seconds
+        self.scope = scope
         self._timestamps: dict[str, deque] = defaultdict(deque)
         self._lock = threading.Lock()
+        try:
+            self._redis = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+            self._redis.ping()
+        except Exception:
+            self._redis = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -63,6 +48,8 @@ class SlidingWindowRateLimiter:
             True  — request is allowed.
             False — rate limit exceeded; caller should return HTTP 429.
         """
+        if self._redis:
+            return self._is_allowed_redis(key)
         now = time.monotonic()
         cutoff = now - self.window_seconds
 
@@ -78,6 +65,14 @@ class SlidingWindowRateLimiter:
 
             ts.append(now)
             return True
+
+    def _is_allowed_redis(self, key: str) -> bool:
+        assert self._redis is not None
+        redis_key = f"{settings.RATE_LIMIT_REDIS_PREFIX}:{self.scope}:{key}"
+        current = self._redis.incr(redis_key)
+        if current == 1:
+            self._redis.expire(redis_key, int(self.window_seconds))
+        return current <= self.max_calls
 
     def remaining(self, key: str) -> int:
         """
@@ -105,4 +100,6 @@ class SlidingWindowRateLimiter:
 # ---------------------------------------------------------------------------
 
 #: 10 uploads per 60-second window per user
-upload_rate_limiter = SlidingWindowRateLimiter(max_calls=10, window_seconds=60)
+upload_rate_limiter = SlidingWindowRateLimiter(max_calls=10, window_seconds=60, scope="upload")
+login_rate_limiter = SlidingWindowRateLimiter(max_calls=8, window_seconds=60, scope="login")
+detect_rate_limiter = SlidingWindowRateLimiter(max_calls=30, window_seconds=60, scope="detect")

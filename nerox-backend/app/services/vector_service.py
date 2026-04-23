@@ -150,12 +150,23 @@ class VectorIndex:
         if not _FAISS_AVAILABLE or self._index is None:
             return
 
-        vec = np.array([embedding], dtype=np.float32)  # shape (1, 2048)
+        vec_1d = np.array(embedding, dtype=np.float32)
+        if vec_1d.shape[0] != self._dim:
+            logger.error(
+                "FAISS add rejected: dimension mismatch for asset=%s (got=%d expected=%d)",
+                asset_id, vec_1d.shape[0], self._dim,
+            )
+            return
+        vec = self._normalize_2d(vec_1d.reshape(1, -1))
 
         with self._lock:
             self._index.add(vec)
             self._index_to_asset.append(asset_id)
 
+        logger.info(
+            "Vector added to FAISS: %s",
+            asset_id,
+        )
         logger.debug(
             "FAISS: added asset %s (total vectors=%d)",
             asset_id, len(self._index_to_asset),
@@ -192,13 +203,21 @@ class VectorIndex:
             logger.warning("FAISS unavailable — returning empty similarity results.")
             return []
 
+        logger.info("Searching FAISS index")
         with self._lock:
             total = self._index.ntotal
             if total == 0:
                 return []
             # search more than top_k to account for self-exclusion
             k = min(top_k + 5, total)
-            query = np.array([query_embedding], dtype=np.float32)
+            query_1d = np.array(query_embedding, dtype=np.float32)
+            if query_1d.shape[0] != self._dim:
+                logger.error(
+                    "FAISS search rejected: query dimension mismatch (got=%d expected=%d)",
+                    query_1d.shape[0], self._dim,
+                )
+                return []
+            query = self._normalize_2d(query_1d.reshape(1, -1))
             scores, indices = self._index.search(query, k)
             mapping = list(self._index_to_asset)
 
@@ -215,17 +234,28 @@ class VectorIndex:
                 continue
             results.append({
                 "asset_id":       aid,
+                "matched_asset_id": aid,
                 "similarity":     round(sim, 4),
+                "similarity_score": round(sim, 4),
                 "match_strength": "strong" if sim >= STRONG_MATCH_THRESHOLD else "possible",
+                "confidence": "high" if sim >= STRONG_MATCH_THRESHOLD else "medium",
             })
             if len(results) >= top_k:
                 break
 
+        logger.info("Matches found: %d", len(results))
         logger.debug(
             "FAISS search: top_k=%d | matches_above_threshold=%d",
             top_k, len(results),
         )
         return results
+
+    @staticmethod
+    def _normalize_2d(vectors: np.ndarray) -> np.ndarray:
+        """L2-normalize a 2D vector batch for cosine/IP FAISS search."""
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        norms = np.where(norms < 1e-9, 1.0, norms)
+        return (vectors / norms).astype(np.float32)
 
     @property
     def total(self) -> int:

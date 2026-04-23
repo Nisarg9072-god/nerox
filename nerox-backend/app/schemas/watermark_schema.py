@@ -88,6 +88,9 @@ class VerifyResponse(BaseModel):
     verified:           bool  = Field(
         ..., description="True when token matched a completed watermark in the database."
     )
+    is_verified:        bool  = Field(
+        ..., description="Alias of verified for compatibility."
+    )
     confidence:         float = Field(
         ..., description="DCT bit-agreement score [0.0, 1.0]. Higher = more certain."
     )
@@ -99,9 +102,15 @@ class VerifyResponse(BaseModel):
             "possible (0.40–0.60) | insufficient (<0.40)"
         ),
     )
+    strength:           str   = Field(
+        ..., description="Alias of confidence_label for compatibility."
+    )
     ownership:          Optional[OwnershipMatch] = Field(
         default=None,
         description="Populated only when verified=True. Contains asset_id, user_id.",
+    )
+    asset_id:           Optional[str] = Field(
+        default=None, description="Matched asset id when verified."
     )
     wm_token_detected:  str   = Field(
         ..., description="16-char hex of the extracted watermark token."
@@ -111,4 +120,7 @@ class VerifyResponse(BaseModel):
     )
     error:              Optional[str] = Field(
         default=None, description="Set when extraction or lookup could not complete."
+    )
+    message:            str = Field(
+        ..., description="Human-readable verification outcome message."
     )

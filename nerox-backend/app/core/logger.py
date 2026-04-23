@@ -23,8 +23,35 @@ obtained via get_logger(__name__) inherit its handler automatically,
 preventing duplicate log entries even across worker reloads.
 """
 
+import json
 import logging
 import sys
+from datetime import datetime, timezone
+
+
+class JsonFormatter(logging.Formatter):
+    """JSON formatter for structured production logs."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+
+        reserved = {
+            "name", "msg", "args", "levelname", "levelno", "pathname",
+            "filename", "module", "exc_info", "exc_text", "stack_info",
+            "lineno", "funcName", "created", "msecs", "relativeCreated",
+            "thread", "threadName", "processName", "process",
+        }
+        for key, value in record.__dict__.items():
+            if key not in reserved and not key.startswith("_"):
+                payload[key] = value
+        return json.dumps(payload, default=str)
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -44,10 +71,7 @@ def get_logger(name: str) -> logging.Logger:
         handler = logging.StreamHandler(sys.stdout)
         handler.setLevel(logging.DEBUG)
 
-        formatter = logging.Formatter(
-            fmt="[%(asctime)s] [%(levelname)-8s] [%(name)s] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
+        formatter = JsonFormatter()
         handler.setFormatter(formatter)
 
         root.addHandler(handler)

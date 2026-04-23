@@ -9,10 +9,11 @@ import { useEffect, useState } from 'react';
 import {
   analyticsService,
   type DashboardResponse,
-  type HighRiskAsset,
   type PlatformsResponse,
+  type DetectionInsightsResponse,
 } from '../../../services/analyticsService';
 import { toast } from 'sonner';
+import { useWsEvent } from '../../../context/WebSocketContext';
 
 const PIE_COLORS = ['#3b82f6', '#ef4444', '#f59e0b', '#8b5cf6', '#06b6d4', '#6b7280'];
 
@@ -22,26 +23,30 @@ function Skeleton({ h = 300 }: { h?: number }) {
 
 export default function Analytics() {
   const [dash,     setDash]     = useState<DashboardResponse | null>(null);
-  const [highRisk, setHighRisk] = useState<HighRiskAsset[]>([]);
   const [platforms, setPlatforms] = useState<PlatformsResponse | null>(null);
+  const [insights, setInsights] = useState<DetectionInsightsResponse | null>(null);
   const [loading,  setLoading]  = useState(true);
 
   useEffect(() => {
     let c = false;
     Promise.all([
       analyticsService.getDashboard(),
-      analyticsService.getHighRiskAssets(5),
       analyticsService.getPlatforms(),
-    ]).then(([d, hr, pl]) => {
+      analyticsService.getDetectionInsights(30),
+    ]).then(([d, pl, ins]) => {
       if (c) return;
       setDash(d);
-      setHighRisk(hr.assets);
       setPlatforms(pl);
+      setInsights(ins);
     }).catch(() => {
       if (!c) toast.error('Failed to load analytics.');
     }).finally(() => { if (!c) setLoading(false); });
     return () => { c = true; };
   }, []);
+
+  useWsEvent('job_completed', () => {
+    analyticsService.getDetectionInsights(30).then(setInsights).catch(() => {});
+  });
 
   const ov = dash?.overview;
 
@@ -55,13 +60,8 @@ export default function Analytics() {
     color: PIE_COLORS[i % PIE_COLORS.length],
   })) ?? [];
 
-  const topAssetsBar = highRisk.map(a => ({
-    name:       a.original_filename.length > 20
-                  ? a.original_filename.slice(0, 20) + '…'
-                  : a.original_filename,
-    detections: a.detection_count,
-    risk:       a.max_risk_score,
-  }));
+  const insightTrend = insights?.daily_trend.map((t) => ({ date: t.date.slice(5), count: t.count })) ?? [];
+  const attackedAssets = insights?.top_attacked_assets ?? [];
 
   return (
     <div className="p-6 md:p-8 space-y-8">
@@ -143,6 +143,31 @@ export default function Analytics() {
           </Card>
         </motion.div>
 
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
+          <Card>
+            <CardHeader>
+              <CardTitle>Detection Insights Trend</CardTitle>
+              <CardDescription>Real detection-insights daily counts</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {loading ? <Skeleton /> : insightTrend.length === 0 ? (
+                <div className="h-[300px] flex items-center justify-center text-muted-foreground">No insights yet</div>
+              ) : (
+                <ResponsiveContainer width="100%" height={300}>
+                  <LineChart data={insightTrend}>
+                    <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
+                    <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                    <YAxis />
+                    <Tooltip />
+                    <Legend />
+                    <Line type="monotone" dataKey="count" stroke="hsl(var(--primary))" strokeWidth={2} name="Daily detections" />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+
         {/* Platform pie */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
           <Card>
@@ -181,33 +206,33 @@ export default function Analytics() {
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
           <Card className="lg:col-span-2">
             <CardHeader>
-              <CardTitle>Most Detected Assets</CardTitle>
-              <CardDescription>Top 5 by detection count</CardDescription>
+              <CardTitle>Top Attacked Assets</CardTitle>
+              <CardDescription>Most targeted assets from detection-insights</CardDescription>
             </CardHeader>
             <CardContent>
-              {loading ? <Skeleton /> : highRisk.length === 0 ? (
+              {loading ? <Skeleton /> : attackedAssets.length === 0 ? (
                 <div className="py-6 text-center text-muted-foreground">
                   No detection data yet. Upload assets and run detections.
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {highRisk.map((asset, i) => (
+                  {attackedAssets.slice(0, 5).map((asset) => (
                     <div key={asset.asset_id} className="flex items-center justify-between">
                       <div className="flex-1 pr-4">
-                        <div className="font-medium mb-1 truncate">{asset.original_filename}</div>
+                        <div className="font-medium mb-1 truncate">{asset.filename}</div>
                         <div className="flex gap-2 text-xs text-muted-foreground mb-1">
-                          <span>Risk {asset.max_risk_score}/100</span>
+                          <span>Risk {asset.max_risk}/100</span>
                           <span>•</span>
                           <span className="capitalize">{asset.platforms.slice(0, 3).join(', ')}</span>
                         </div>
                         <div className="w-full bg-muted rounded-full h-2">
                           <div
                             className={`h-2 rounded-full ${
-                              asset.max_risk_score >= 76 ? 'bg-destructive' :
-                              asset.max_risk_score >= 51 ? 'bg-orange-500' :
+                              asset.max_risk >= 76 ? 'bg-destructive' :
+                              asset.max_risk >= 51 ? 'bg-orange-500' :
                               'bg-primary'
                             }`}
-                            style={{ width: `${asset.max_risk_score}%` }}
+                            style={{ width: `${asset.max_risk}%` }}
                           />
                         </div>
                       </div>
