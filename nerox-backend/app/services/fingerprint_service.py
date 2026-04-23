@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import List
 
 import numpy as np
+import cv2
 from bson import ObjectId
 
 from app.core.logger import get_logger
@@ -277,6 +278,71 @@ def generate_embedding_for_detection(
         vec = svc.embed_frames(frames)
 
     return vec.tolist()
+
+
+def generate_embeddings_for_detection_variants(
+    file_path: str,
+    file_type: str,
+) -> list[list[float]]:
+    """
+    Generate multiple embeddings for a single query to improve recall on
+    real-world transformations (resize/crop/blur).
+
+    Variants (image only):
+      - original (224)
+      - resized from 256 → 224
+      - resized from 512 → 224
+      - center-crop (80%) → 224
+      - slight blur → 224
+
+    For video, falls back to the single embedding.
+    """
+    if file_type != "image":
+        return [generate_embedding_for_detection(file_path, file_type)]
+
+    svc = get_embedding_service()
+
+    # Load original at native resolution (BGR)
+    raw_bgr = get_image_processor().load_and_validate(file_path)
+
+    def _to_224_rgb(bgr: np.ndarray) -> np.ndarray:
+        resized = cv2.resize(bgr, (224, 224), interpolation=cv2.INTER_LANCZOS4)
+        return cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+
+    variants_rgb: list[np.ndarray] = []
+
+    # Variant 1: original (direct to 224)
+    variants_rgb.append(_to_224_rgb(raw_bgr))
+
+    h, w = raw_bgr.shape[:2]
+
+    # Variant 2/3: resize the source before downscaling to model input
+    for side in (256, 512):
+        scale = side / float(max(h, w))
+        nh = max(1, int(round(h * scale)))
+        nw = max(1, int(round(w * scale)))
+        bgr_scaled = cv2.resize(raw_bgr, (nw, nh), interpolation=cv2.INTER_LANCZOS4)
+        variants_rgb.append(_to_224_rgb(bgr_scaled))
+
+    # Variant 4: center crop (80% of min side) then resize
+    crop_side = int(round(min(h, w) * 0.8))
+    if crop_side >= 32:
+        y0 = max(0, (h - crop_side) // 2)
+        x0 = max(0, (w - crop_side) // 2)
+        cropped = raw_bgr[y0:y0 + crop_side, x0:x0 + crop_side]
+        if cropped.size > 0:
+            variants_rgb.append(_to_224_rgb(cropped))
+
+    # Variant 5: slight blur on the native resolution, then resize
+    blurred = cv2.GaussianBlur(raw_bgr, (5, 5), sigmaX=0.8)
+    variants_rgb.append(_to_224_rgb(blurred))
+
+    embeddings: list[list[float]] = []
+    for rgb in variants_rgb:
+        vec = svc.embed_frame(rgb)
+        embeddings.append(vec.tolist())
+
+    return embeddings
 
 
 # ---------------------------------------------------------------------------

@@ -71,7 +71,19 @@ class Settings(BaseSettings):
     YOUTUBE_API_KEY: str = ""                # YouTube Data API v3 key
     AUTO_SCAN_INTERVAL_MIN: int = 60         # Scheduler tick interval (minutes)
     AUTO_SCAN_MAX_ITEMS: int = 30            # Max media items per scan job
-    AUTO_SCAN_SIMILARITY_MIN: float = 0.70   # Cosine similarity floor
+    # Detection similarity tuning (Phase 2.6+ accuracy upgrade)
+    # AUTO_SCAN_* applies to background auto-detect jobs.
+    # DETECT_* applies to POST /detect (manual detection).
+    AUTO_SCAN_SIMILARITY_MIN: float = 0.60   # Cosine similarity floor (recall-focused default)
+    AUTO_SCAN_TOP_K: int = 10                # Max candidates considered per media item (pre-filter)
+    DETECT_SIMILARITY_MIN: float = 0.60      # Manual detect similarity floor
+    DETECT_TOP_K_DEFAULT: int = 5            # Default response top_k if caller doesn't override
+    DEBUG_DETECTION: bool = False            # If true: return top matches even below threshold
+
+    # Confidence buckets (shared)
+    DETECT_CONFIDENCE_HIGH_MIN: float = 0.75
+    DETECT_CONFIDENCE_MEDIUM_MIN: float = 0.60
+    DETECT_CONFIDENCE_LOW_MIN: float = 0.50
     AUTO_SCAN_TIMEOUT_SEC: int = 600         # Hard timeout per job (10 min)
     AUTO_SCAN_REQUEST_DELAY: float = 1.5     # Delay between external requests (sec)
     AUTO_DETECT_MAX_WORKERS: int = 4         # ThreadPool workers for auto-detect jobs

@@ -154,11 +154,19 @@ def run_detection_job(job_id: str) -> None:
         # ── 3. Ingest media from source ──────────────────────────────────────
         media_items = _run_ingestion(source, query)
         if not media_items:
+            db[DETECTION_JOBS_COL].update_one(
+                {"_id": job_oid},
+                {"$set": {"warning": "No media found (empty results or blocked site)."}},
+            )
             _complete_job(db, job_oid, 0, 0, [], None)
             return
 
         # Cap to configured limit
         media_items = media_items[:settings.AUTO_SCAN_MAX_ITEMS]
+        logger.info(
+            "Ingestion complete — job_id=%s source=%s extracted=%d",
+            job_id, source, len(media_items),
+        )
 
         # ── 4 + 5 + 6. Process & compare each item ──────────────────────────
         total_scanned = 0
@@ -176,6 +184,10 @@ def run_detection_job(job_id: str) -> None:
                 break
 
             try:
+                logger.info(
+                    "Auto-detect item start — job_id=%s url=%s",
+                    job_id, (item.get("thumbnail_url") or item.get("url") or "")[:140],
+                )
                 result, timing = _process_and_compare(item, user_assets, user_id)
                 total_scanned += 1
                 fingerprint_time_ms += timing.get("fingerprint_time_ms", 0.0)
@@ -334,7 +346,11 @@ def _get_user_assets(db: Any, user_id: str, asset_ids: List[str]) -> List[dict]:
         recency = 0.0
         if last_det and last_det.get("detected_at"):
             from datetime import timedelta
-            age_days = (datetime.now(timezone.utc) - last_det["detected_at"]).days
+            det_at = last_det["detected_at"]
+            # Some existing records may have naive datetimes; treat as UTC.
+            if getattr(det_at, "tzinfo", None) is None:
+                det_at = det_at.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - det_at).days
             recency = max(0, 1.0 - (age_days / 30.0))  # Decay over 30 days
 
         priority = (max_risk / 100.0 * 0.6) + (min(det_count, 20) / 20.0 * 0.3) + (recency * 0.1) + premium_boost
@@ -367,13 +383,19 @@ def _run_ingestion(source: str, query: str) -> List[dict]:
 
     Since ingestion sources are async, we run them in a new event loop.
     """
-    from app.services.ingestion.registry import source_registry
+    from app.services.ingestion.registry import source_registry, initialize_default_sources
+
+    # Worker processes may execute this without FastAPI startup having run.
+    # Ensure default sources are registered in this process.
+    if source_registry.count == 0:
+        initialize_default_sources()
 
     src = source_registry.get_by_name(source)
     if not src:
         logger.warning("Unknown ingestion source: '%s'", source)
         return []
 
+    logger.info("Ingestion started — source=%s query='%s'", source, query)
     # Run async search in a new event loop (we're in a thread pool)
     try:
         loop = asyncio.new_event_loop()
@@ -438,34 +460,44 @@ def _process_and_compare(
         return [], {"fingerprint_time_ms": 0.0, "similarity_time_ms": 0.0}
 
     # Download to temp file
-    tmp_path = _download_media(url)
+    tmp_path = _download_media(url, referer=item.get("metadata", {}).get("page_url"))
     if not tmp_path:
         return [], {"fingerprint_time_ms": 0.0, "similarity_time_ms": 0.0}
 
     try:
         t_fp = time.perf_counter()
         # Generate embedding
-        from app.services.fingerprint_service import generate_embedding_for_detection
+        from app.services.fingerprint_service import (
+            generate_embedding_for_detection,
+            generate_embeddings_for_detection_variants,
+        )
 
         # For video thumbnails, treat as image
         process_type = "image" if media_type == "image" or item.get("thumbnail_url") else "video"
-        embedding = generate_embedding_for_detection(str(tmp_path), process_type)
+        # Multi-variant embedding for images (max similarity across variants)
+        if process_type == "image":
+            embeddings = generate_embeddings_for_detection_variants(str(tmp_path), process_type)
+        else:
+            embeddings = [generate_embedding_for_detection(str(tmp_path), process_type)]
 
-        if not embedding:
+        if not embeddings or not embeddings[0]:
             return [], {"fingerprint_time_ms": 0.0, "similarity_time_ms": 0.0}
         fp_ms = (time.perf_counter() - t_fp) * 1000.0
 
         # Compare against each user asset
         t_sim = time.perf_counter()
         matches: List[dict] = []
-        query_vec = np.array(embedding, dtype=np.float32)
-        query_norm = query_vec / (np.linalg.norm(query_vec) + 1e-8)
+        query_norms: list[np.ndarray] = []
+        for emb in embeddings:
+            qv = np.array(emb, dtype=np.float32)
+            query_norms.append(qv / (np.linalg.norm(qv) + 1e-8))
 
         for asset in user_assets:
             asset_vec = np.array(asset["embedding"], dtype=np.float32)
             asset_norm = asset_vec / (np.linalg.norm(asset_vec) + 1e-8)
 
-            similarity = float(np.dot(query_norm, asset_norm))
+            # Max similarity across variants
+            similarity = max(float(np.dot(qn, asset_norm)) for qn in query_norms)
 
             # Phase 2.6: Smart match filtering
             # HIGH_MATCH  ≥ 0.85 → Store + Alert
@@ -475,12 +507,16 @@ def _process_and_compare(
                 continue
 
             # Classify match confidence
-            if similarity >= 0.85:
+            if similarity >= float(settings.DETECT_CONFIDENCE_HIGH_MIN):
                 match_confidence = "HIGH_MATCH"
                 match_strength = "strong"
                 should_alert = True
-            else:
+            elif similarity >= float(settings.DETECT_CONFIDENCE_MEDIUM_MIN):
                 match_confidence = "MEDIUM_MATCH"
+                match_strength = "possible"
+                should_alert = False
+            else:
+                match_confidence = "LOW_MATCH"
                 match_strength = "possible"
                 should_alert = False
 
@@ -522,6 +558,13 @@ def _process_and_compare(
                 )
 
         sim_ms = (time.perf_counter() - t_sim) * 1000.0
+        if matches:
+            top_scores = sorted([m.get("similarity", 0.0) for m in matches], reverse=True)[:5]
+            logger.info(
+                "auto-detect: similarity distribution (top %d) — %s",
+                len(top_scores),
+                [float(s) for s in top_scores],
+            )
         return matches, {"fingerprint_time_ms": fp_ms, "similarity_time_ms": sim_ms}
 
     except Exception as exc:
@@ -536,35 +579,58 @@ def _process_and_compare(
             pass
 
 
-def _download_media(url: str) -> Optional[Path]:
+def _download_media(url: str, *, referer: str | None = None) -> Optional[Path]:
     """Download a media file to a temp location. Returns path or None."""
-    try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "NeroxBot/2.5",
+    def _attempt(u: str) -> Optional[bytes]:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Accept": "image/*,video/*,*/*",
-        })
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        if referer:
+            headers["Referer"] = referer
+        req = urllib.request.Request(u, headers=headers)
         with urllib.request.urlopen(req, timeout=15) as resp:
-            data = resp.read()
+            return resp.read(), resp.headers.get("Content-Type", "")
 
-            # Determine extension from content type
-            content_type = resp.headers.get("Content-Type", "")
-            ext = ".jpg"  # default
-            if "png" in content_type:
-                ext = ".png"
-            elif "webp" in content_type:
-                ext = ".webp"
-            elif "mp4" in content_type:
-                ext = ".mp4"
+    try:
+        data, content_type = _attempt(url)
+        # Determine extension from content type
+        ext = ".jpg"  # default
+        if "png" in content_type:
+            ext = ".png"
+        elif "webp" in content_type:
+            ext = ".webp"
+        elif "mp4" in content_type:
+            ext = ".mp4"
 
-            # Save to temp file
-            tmp = Path(tempfile.mktemp(suffix=ext, dir="storage/temp"))
-            tmp.parent.mkdir(parents=True, exist_ok=True)
-            tmp.write_bytes(data)
+        # Save to temp file
+        tmp = Path(tempfile.mktemp(suffix=ext, dir="storage/temp"))
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_bytes(data)
 
-            logger.debug("Downloaded media: %s → %s (%d bytes)", url[:80], tmp, len(data))
-            return tmp
+        logger.debug("Downloaded media: %s → %s (%d bytes)", url[:80], tmp, len(data))
+        return tmp
 
     except Exception as exc:
+        # Pinterest often blocks /originals/ without proper headers; try smaller variants.
+        if "/originals/" in url:
+            for variant in ("/564x/", "/474x/", "/236x/"):
+                alt = url.replace("/originals/", variant)
+                try:
+                    data, content_type = _attempt(alt)
+                    ext = ".jpg"
+                    if "png" in content_type:
+                        ext = ".png"
+                    elif "webp" in content_type:
+                        ext = ".webp"
+                    tmp = Path(tempfile.mktemp(suffix=ext, dir="storage/temp"))
+                    tmp.parent.mkdir(parents=True, exist_ok=True)
+                    tmp.write_bytes(data)
+                    logger.debug("Downloaded media (fallback): %s → %s (%d bytes)", alt[:80], tmp, len(data))
+                    return tmp
+                except Exception:
+                    continue
         logger.warning("Failed to download '%s': %s", url[:80], exc)
         return None
 

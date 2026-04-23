@@ -37,8 +37,12 @@ from app.db.mongodb import get_database, get_sync_database
 from app.schemas.detect_schema import DetectionMatch, DetectionResponse
 from app.services.detection_service import create_detection
 from app.services.file_service import detect_file_type, validate_file
-from app.services.fingerprint_service import generate_embedding_for_detection
+from app.services.fingerprint_service import (
+    generate_embedding_for_detection,
+    generate_embeddings_for_detection_variants,
+)
 from app.services.vector_service import get_vector_index
+from app.core.config import settings
 
 logger = get_logger(__name__)
 
@@ -141,10 +145,15 @@ async def detect_similarity(
             data = await file.read()
             tmp_path.write_bytes(data)
             try:
-                embedding = await asyncio.to_thread(
-                    generate_embedding_for_detection, str(tmp_path), file_type
+                # Multi-variant embedding (max similarity across variants)
+                embeddings = await asyncio.to_thread(
+                    generate_embeddings_for_detection_variants, str(tmp_path), file_type
                 )
-                logger.info("Embedding generated — mode=file user=%s", user_id)
+                embedding = embeddings[0] if embeddings else []
+                logger.info(
+                    "Embedding(s) generated — mode=file user=%s variants=%d",
+                    user_id, len(embeddings),
+                )
             except RuntimeError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -221,11 +230,30 @@ async def detect_similarity(
             matches=[],
         )
 
-    raw_matches = vector_index.search_similar(
-        query_embedding=embedding,
-        top_k=top_k,
-        exclude_asset_id=exclude_id,
-    )
+    include_below = bool(settings.DEBUG_DETECTION)
+    min_floor = float(settings.DETECT_SIMILARITY_MIN)
+
+    if file is not None:
+        # file-mode uses multi embeddings if available
+        try:
+            embeddings  # type: ignore[name-defined]
+        except Exception:
+            embeddings = [embedding]
+        raw_matches = vector_index.search_similar_multi(
+            query_embeddings=embeddings,
+            top_k=top_k,
+            exclude_asset_id=exclude_id,
+            min_similarity=min_floor,
+            include_below_threshold=include_below,
+        )
+    else:
+        raw_matches = vector_index.search_similar(
+            query_embedding=embedding,
+            top_k=top_k,
+            exclude_asset_id=exclude_id,
+            min_similarity=min_floor,
+            include_below_threshold=include_below,
+        )
     if raw_matches:
         match_ids = [ObjectId(m["asset_id"]) for m in raw_matches if ObjectId.is_valid(m.get("asset_id", ""))]
         if match_ids:
@@ -243,6 +271,11 @@ async def detect_similarity(
         logger.info(
             "Similarity computed — top match score: %.4f",
             float(raw_matches[0].get("similarity", 0.0)),
+        )
+        logger.info(
+            "detect: similarity distribution (top %d) — %s",
+            min(len(raw_matches), 5),
+            [float(m.get("similarity", 0.0)) for m in raw_matches[:5]],
         )
     else:
         logger.info("Similarity computed — no matches above threshold")
@@ -381,8 +414,8 @@ async def start_auto_detection(
     )
 
     logger.info(
-        "Auto-detection job dispatched — id=%s source=%s user=%s",
-        job_id, body.source, user_id,
+        "Auto-detection job dispatched — job_id=%s task_id=%s queue=%s source=%s user=%s",
+        job_id, task_id, settings.RQ_QUEUE_NAME, body.source, user_id,
     )
 
     return StartAutoDetectResponse(

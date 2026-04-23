@@ -40,6 +40,7 @@ from typing import Optional
 
 import numpy as np
 
+from app.core.config import settings
 from app.core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -48,9 +49,7 @@ logger = get_logger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-EMBEDDING_DIM            = 2048
-STRONG_MATCH_THRESHOLD   = 0.90
-POSSIBLE_MATCH_THRESHOLD = 0.70
+EMBEDDING_DIM = 2048
 
 # ---------------------------------------------------------------------------
 # FAISS lazy import
@@ -181,6 +180,9 @@ class VectorIndex:
         query_embedding: list[float],
         top_k: int = 10,
         exclude_asset_id: Optional[str] = None,
+        *,
+        min_similarity: Optional[float] = None,
+        include_below_threshold: bool = False,
     ) -> list[dict]:
         """
         Return the top-k most similar assets to query_embedding.
@@ -197,7 +199,8 @@ class VectorIndex:
                   "similarity":     float,     # cosine similarity 0–1
                   "match_strength": str,        # "strong" | "possible"
                 }
-            Only entries with similarity ≥ POSSIBLE_MATCH_THRESHOLD are returned.
+            Only entries with similarity ≥ min_similarity are returned unless
+            include_below_threshold=True.
         """
         if not _FAISS_AVAILABLE or self._index is None:
             logger.warning("FAISS unavailable — returning empty similarity results.")
@@ -221,6 +224,7 @@ class VectorIndex:
             scores, indices = self._index.search(query, k)
             mapping = list(self._index_to_asset)
 
+        floor = float(settings.DETECT_SIMILARITY_MIN if min_similarity is None else min_similarity)
         results: list[dict] = []
         for score, idx in zip(scores[0], indices[0]):
             if idx < 0 or idx >= len(mapping):
@@ -230,25 +234,78 @@ class VectorIndex:
                 continue
             # Cosine similarity is in [-1, 1]; clip to [0, 1] for normalised vectors
             sim = float(np.clip(score, 0.0, 1.0))
-            if sim < POSSIBLE_MATCH_THRESHOLD:
+            if (not include_below_threshold) and sim < floor:
                 continue
+            if sim >= float(settings.DETECT_CONFIDENCE_HIGH_MIN):
+                confidence = "high"
+                match_strength = "strong"
+            elif sim >= float(settings.DETECT_CONFIDENCE_MEDIUM_MIN):
+                confidence = "medium"
+                match_strength = "possible"
+            elif sim >= float(settings.DETECT_CONFIDENCE_LOW_MIN):
+                confidence = "low"
+                match_strength = "possible"
+            else:
+                confidence = "low"
+                match_strength = "possible"
             results.append({
                 "asset_id":       aid,
                 "matched_asset_id": aid,
                 "similarity":     round(sim, 4),
                 "similarity_score": round(sim, 4),
-                "match_strength": "strong" if sim >= STRONG_MATCH_THRESHOLD else "possible",
-                "confidence": "high" if sim >= STRONG_MATCH_THRESHOLD else "medium",
+                "match_strength": match_strength,
+                "confidence": confidence,
             })
             if len(results) >= top_k:
                 break
 
         logger.info("Matches found: %d", len(results))
         logger.debug(
-            "FAISS search: top_k=%d | matches_above_threshold=%d",
-            top_k, len(results),
+            "FAISS search: top_k=%d | include_below=%s | floor=%.3f | returned=%d",
+            top_k, include_below_threshold, floor, len(results),
         )
         return results
+
+    def search_similar_multi(
+        self,
+        query_embeddings: list[list[float]],
+        top_k: int = 10,
+        exclude_asset_id: Optional[str] = None,
+        *,
+        min_similarity: Optional[float] = None,
+        include_below_threshold: bool = False,
+    ) -> list[dict]:
+        """
+        Search using multiple query embeddings (variants) and aggregate by taking
+        the maximum similarity per matched asset.
+        """
+        if not query_embeddings:
+            return []
+
+        aggregated: dict[str, dict] = {}
+        for q in query_embeddings:
+            hits = self.search_similar(
+                query_embedding=q,
+                top_k=max(top_k, 10),
+                exclude_asset_id=exclude_asset_id,
+                min_similarity=min_similarity,
+                include_below_threshold=True,  # aggregate first, filter later
+            )
+            for h in hits:
+                aid = h.get("asset_id")
+                if not aid:
+                    continue
+                prev = aggregated.get(aid)
+                if (prev is None) or (float(h.get("similarity", 0.0)) > float(prev.get("similarity", 0.0))):
+                    aggregated[aid] = h
+
+        items = sorted(aggregated.values(), key=lambda x: float(x.get("similarity", 0.0)), reverse=True)
+
+        floor = float(settings.DETECT_SIMILARITY_MIN if min_similarity is None else min_similarity)
+        if not include_below_threshold:
+            items = [m for m in items if float(m.get("similarity", 0.0)) >= floor]
+
+        return items[:top_k]
 
     @staticmethod
     def _normalize_2d(vectors: np.ndarray) -> np.ndarray:
