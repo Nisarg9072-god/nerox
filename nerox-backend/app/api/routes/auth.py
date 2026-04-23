@@ -3,20 +3,25 @@ app/api/routes/auth.py
 ======================
 Authentication endpoints for the Nerox SaaS platform.
 
+Phase 2 upgrade: All endpoints converted to async + new endpoints added.
+
 Endpoints
 ---------
-POST /auth/register  — Create a new user account
-POST /auth/login     — Authenticate and receive JWT access + refresh tokens
-POST /auth/refresh   — Exchange a valid refresh token for a new access token
-GET  /auth/me        — Return the current user's profile
-
-All database interactions go through PyMongo directly (no ORM).  Business
-logic is kept inside each route handler for clarity; in a larger codebase
-this would be extracted into a service / repository layer.
+POST /auth/register        — Create a new user account
+POST /auth/login           — Authenticate and receive JWT access + refresh tokens
+POST /auth/refresh         — Exchange a valid refresh token for a new access token
+GET  /auth/me              — Return the current user's profile (legacy)
+GET  /auth/profile         — Return full profile (Phase 2)
+PUT  /auth/profile         — Update profile (name, company_name)
+PATCH /auth/password       — Change password
+POST /auth/forgot-password — Request password reset token
+POST /auth/reset-password  — Reset password with token
 """
 
+import hashlib
 import logging
-from datetime import datetime, timezone
+import secrets
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pymongo.errors import DuplicateKeyError
@@ -35,10 +40,17 @@ from app.core.security import (
 from app.db.mongodb import get_database
 from app.schemas.user_schema import (
     ErrorDetail,
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
     LoginRequest,
+    PasswordChangeRequest,
+    ProfileResponse,
+    ProfileUpdateRequest,
     RefreshRequest,
     RegisterRequest,
     RegisterResponse,
+    ResetPasswordRequest,
+    ResetPasswordResponse,
     TokenResponse,
 )
 
@@ -48,15 +60,15 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
-# GET /auth/me
+# GET /auth/me  (legacy — kept for backward compatibility)
 # ---------------------------------------------------------------------------
 
 @router.get(
     "/me",
-    summary="Get current user profile",
+    summary="Get current user profile (legacy)",
     description="Returns the authenticated user's profile (company_name, email, id).",
 )
-def get_me(
+async def get_me(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     return {
@@ -66,6 +78,266 @@ def get_me(
         "is_active":    current_user.get("is_active", True),
         "created_at":   current_user.get("created_at", "").isoformat() if current_user.get("created_at") else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# GET /auth/profile  (Phase 2)
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/profile",
+    response_model=ProfileResponse,
+    summary="Get current user profile",
+    description="Returns the authenticated user's full profile including name, email, company, and creation date.",
+)
+async def get_profile(
+    current_user: dict = Depends(get_current_user),
+) -> ProfileResponse:
+    return ProfileResponse(
+        id=str(current_user["_id"]),
+        name=current_user.get("name", current_user.get("company_name", "")),
+        email=current_user.get("email", ""),
+        company_name=current_user.get("company_name", ""),
+        created_at=current_user.get("created_at", "").isoformat() if current_user.get("created_at") else None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# PUT /auth/profile  (Phase 2)
+# ---------------------------------------------------------------------------
+
+@router.put(
+    "/profile",
+    response_model=ProfileResponse,
+    summary="Update user profile",
+    description=(
+        "Update the authenticated user's profile. "
+        "Only `name` and `company_name` can be modified. "
+        "Email cannot be changed through this endpoint."
+    ),
+)
+async def update_profile(
+    payload: ProfileUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> ProfileResponse:
+    user_id = current_user["_id"]
+    db = get_database()
+
+    update_fields: dict = {"updated_at": datetime.now(timezone.utc)}
+
+    if payload.name is not None:
+        update_fields["name"] = payload.name
+    if payload.company_name is not None:
+        update_fields["company_name"] = payload.company_name
+
+    if len(update_fields) == 1:
+        # Only updated_at — no actual changes requested
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No fields to update. Provide at least 'name' or 'company_name'.",
+        )
+
+    await db[USERS_COLLECTION].update_one(
+        {"_id": user_id},
+        {"$set": update_fields},
+    )
+
+    # Fetch updated doc
+    updated = await db[USERS_COLLECTION].find_one({"_id": user_id})
+    logger.info("Profile updated — user_id: %s", user_id)
+
+    return ProfileResponse(
+        id=str(updated["_id"]),
+        name=updated.get("name", updated.get("company_name", "")),
+        email=updated.get("email", ""),
+        company_name=updated.get("company_name", ""),
+        created_at=updated.get("created_at", "").isoformat() if updated.get("created_at") else None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# PATCH /auth/password  (Phase 2)
+# ---------------------------------------------------------------------------
+
+@router.patch(
+    "/password",
+    summary="Change password",
+    description=(
+        "Change the authenticated user's password. "
+        "Requires the current password for verification. "
+        "The new password must meet complexity requirements."
+    ),
+    responses={
+        200: {"description": "Password changed successfully"},
+        400: {"description": "Current password is incorrect"},
+        422: {"description": "New password doesn't meet requirements"},
+    },
+)
+async def change_password(
+    payload: PasswordChangeRequest,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    user_id = current_user["_id"]
+    db = get_database()
+
+    # Verify current password
+    stored_hash = current_user.get("hashed_password", "")
+    if not verify_password(payload.current_password, stored_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect.",
+        )
+
+    # Don't allow reusing the same password
+    if verify_password(payload.new_password, stored_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be different from the current password.",
+        )
+
+    # Hash and update
+    new_hash = hash_password(payload.new_password)
+    await db[USERS_COLLECTION].update_one(
+        {"_id": user_id},
+        {"$set": {
+            "hashed_password": new_hash,
+            "updated_at": datetime.now(timezone.utc),
+        }},
+    )
+
+    logger.info("Password changed — user_id: %s", user_id)
+    return {"message": "Password changed successfully."}
+
+
+# ---------------------------------------------------------------------------
+# POST /auth/forgot-password  (Phase 2)
+# ---------------------------------------------------------------------------
+
+# Reset token expiry (minutes)
+RESET_TOKEN_EXPIRY_MINUTES = 30
+
+@router.post(
+    "/forgot-password",
+    response_model=ForgotPasswordResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Request a password reset",
+    description=(
+        "Accepts an email address and generates a password reset token. "
+        "For security, the response is always the same regardless of whether "
+        "the email exists. The reset token is logged to console (email "
+        "delivery is simulated)."
+    ),
+)
+async def forgot_password(payload: ForgotPasswordRequest) -> ForgotPasswordResponse:
+    db = get_database()
+    user_doc = await db[USERS_COLLECTION].find_one(
+        {"email": payload.email.lower()},
+        {"_id": 1, "email": 1, "company_name": 1},
+    )
+
+    if user_doc:
+        # Generate a cryptographically secure reset token
+        raw_token = secrets.token_urlsafe(48)
+
+        # Store the hashed version (never store raw tokens)
+        hashed_token = hashlib.sha256(raw_token.encode()).hexdigest()
+        expiry = datetime.now(timezone.utc) + timedelta(minutes=RESET_TOKEN_EXPIRY_MINUTES)
+
+        await db[USERS_COLLECTION].update_one(
+            {"_id": user_doc["_id"]},
+            {"$set": {
+                "reset_token_hash": hashed_token,
+                "reset_token_expiry": expiry,
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
+
+        # ── Simulate email send (console log) ──────────────────────────────
+        logger.info(
+            "\n"
+            "╔════════════════════════════════════════════════════════════╗\n"
+            "║         📧  PASSWORD RESET EMAIL (SIMULATED)             ║\n"
+            "╠════════════════════════════════════════════════════════════╣\n"
+            "║  To:      %s\n"
+            "║  Company: %s\n"
+            "║  Token:   %s\n"
+            "║  Expires: %s\n"
+            "║                                                          ║\n"
+            "║  Reset URL:                                              ║\n"
+            "║  http://localhost:5173/reset-password?token=%s            \n"
+            "╚════════════════════════════════════════════════════════════╝",
+            user_doc["email"],
+            user_doc.get("company_name", "N/A"),
+            raw_token,
+            expiry.isoformat(),
+            raw_token,
+        )
+    else:
+        # Don't reveal whether the email exists — constant response
+        logger.debug("Forgot-password request for non-existent email: %s", payload.email)
+
+    # Always return the same response (no email enumeration)
+    return ForgotPasswordResponse()
+
+
+# ---------------------------------------------------------------------------
+# POST /auth/reset-password  (Phase 2)
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/reset-password",
+    response_model=ResetPasswordResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Reset password with token",
+    description=(
+        "Accepts a valid reset token and new password. "
+        "The token is validated against the stored hash and expiry. "
+        "On success, the password is updated and the token is invalidated."
+    ),
+    responses={
+        400: {"description": "Invalid or expired token"},
+        422: {"description": "Password doesn't meet requirements"},
+    },
+)
+async def reset_password(payload: ResetPasswordRequest) -> ResetPasswordResponse:
+    db = get_database()
+
+    # Hash the provided token to compare against stored hash
+    hashed_token = hashlib.sha256(payload.token.encode()).hexdigest()
+
+    # Find user with matching token hash that hasn't expired
+    user_doc = await db[USERS_COLLECTION].find_one({
+        "reset_token_hash": hashed_token,
+        "reset_token_expiry": {"$gt": datetime.now(timezone.utc)},
+    })
+
+    if not user_doc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired password reset token. Please request a new one.",
+        )
+
+    # Hash new password and update
+    new_hash = hash_password(payload.new_password)
+    now = datetime.now(timezone.utc)
+
+    await db[USERS_COLLECTION].update_one(
+        {"_id": user_doc["_id"]},
+        {
+            "$set": {
+                "hashed_password": new_hash,
+                "updated_at": now,
+            },
+            "$unset": {
+                "reset_token_hash": "",
+                "reset_token_expiry": "",
+            },
+        },
+    )
+
+    logger.info("Password reset completed — user_id: %s", user_doc["_id"])
+    return ResetPasswordResponse()
+
 
 # ---------------------------------------------------------------------------
 # Pre-computed dummy hash for constant-time login (user-enumeration protection)
@@ -98,7 +370,7 @@ USERS_COLLECTION = "users"
         "bcrypt before storage — the plain-text value is never persisted."
     ),
 )
-def register_user(payload: RegisterRequest) -> RegisterResponse:
+async def register_user(payload: RegisterRequest) -> RegisterResponse:
     """
     Registration flow
     -----------------
@@ -111,7 +383,7 @@ def register_user(payload: RegisterRequest) -> RegisterResponse:
     users = db[USERS_COLLECTION]
 
     # --- 1. Duplicate e-mail check ---
-    existing_user = users.find_one({"email": payload.email}, {"_id": 1})
+    existing_user = await users.find_one({"email": payload.email.lower()}, {"_id": 1})
     if existing_user:
         logger.warning("Registration attempt with existing e-mail: %s", payload.email)
         raise HTTPException(
@@ -125,6 +397,7 @@ def register_user(payload: RegisterRequest) -> RegisterResponse:
     # --- 3. Build the user document ---
     now = datetime.now(timezone.utc)
     user_doc = {
+        "name": payload.company_name.strip(),
         "company_name": payload.company_name.strip(),
         "email": payload.email.lower(),          # normalise to lowercase
         "hashed_password": hashed_pw,
@@ -135,7 +408,7 @@ def register_user(payload: RegisterRequest) -> RegisterResponse:
 
     # --- 4. Persist ---
     try:
-        result = users.insert_one(user_doc)
+        result = await users.insert_one(user_doc)
     except DuplicateKeyError:
         # Race-condition safeguard (unique index on email)
         raise HTTPException(
@@ -178,7 +451,7 @@ def register_user(payload: RegisterRequest) -> RegisterResponse:
         "token in all protected requests as: ``Authorization: Bearer <token>``"
     ),
 )
-def login_user(payload: LoginRequest) -> TokenResponse:
+async def login_user(payload: LoginRequest) -> TokenResponse:
     """
     Login flow
     ----------
@@ -194,12 +467,9 @@ def login_user(payload: LoginRequest) -> TokenResponse:
     users = db[USERS_COLLECTION]
 
     # --- 1. Fetch user ---
-    user_doc = users.find_one({"email": payload.email.lower()})
+    user_doc = await users.find_one({"email": payload.email.lower()})
 
     # --- 2. Verify credentials (constant-time path for both failure modes) ---
-    # Even if the user doesn't exist we still call verify_password with the
-    # module-level _DUMMY_HASH so response timing stays consistent and
-    # prevents user-enumeration attacks via timing differences.
     stored_hash = user_doc["hashed_password"] if user_doc else _DUMMY_HASH
     password_valid = verify_password(payload.password, stored_hash)
 
@@ -251,7 +521,7 @@ def login_user(payload: LoginRequest) -> TokenResponse:
         "without forcing the user to re-login every 30 minutes."
     ),
 )
-def refresh_access_token(payload: RefreshRequest) -> TokenResponse:
+async def refresh_access_token(payload: RefreshRequest) -> TokenResponse:
     """
     Refresh flow
     ------------
@@ -281,7 +551,7 @@ def refresh_access_token(payload: RefreshRequest) -> TokenResponse:
     # --- 2. Verify user still exists ---
     db = get_database()
     try:
-        user_doc = db[USERS_COLLECTION].find_one({"_id": ObjectId(user_id)})
+        user_doc = await db[USERS_COLLECTION].find_one({"_id": ObjectId(user_id)})
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

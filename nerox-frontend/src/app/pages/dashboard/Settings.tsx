@@ -1,18 +1,108 @@
 import { motion } from 'motion/react';
-import { Building2, Bell, Shield, Key } from 'lucide-react';
+import { Building2, Bell, Shield, Key, Loader2, CheckCircle2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
 import { Input } from '../../components/ui/input';
 import { Button } from '../../components/ui/button';
 import { Switch } from '../../components/ui/switch';
 import { useAuth } from '../../../context/AuthContext';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { authService } from '../../../services/authService';
+import { toast } from 'sonner';
 
 export default function Settings() {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
+
+  // ── Profile state ──────────────────────────────────────────────────────────
+  const [profileName, setProfileName] = useState('');
+  const [profileCompany, setProfileCompany] = useState('');
+  const [profileEmail, setProfileEmail] = useState('');
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileSaved, setProfileSaved] = useState(false);
+
+  // ── Password state ─────────────────────────────────────────────────────────
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordLoading, setPasswordLoading] = useState(false);
+
+  // ── Notification preferences (UI-only for now) ─────────────────────────────
   const [emailNotifications, setEmailNotifications] = useState(true);
   const [criticalAlerts, setCriticalAlerts] = useState(true);
   const [weeklyReports, setWeeklyReports] = useState(true);
   const [autoTakedown, setAutoTakedown] = useState(false);
+
+  // Load profile data on mount
+  useEffect(() => {
+    async function loadProfile() {
+      try {
+        const profile = await authService.getProfile();
+        setProfileName(profile.name || '');
+        setProfileCompany(profile.company_name || '');
+        setProfileEmail(profile.email || '');
+      } catch {
+        // Fallback to context data
+        setProfileName(user?.name || user?.companyName || '');
+        setProfileCompany(user?.companyName || '');
+        setProfileEmail(user?.email || '');
+      }
+    }
+    loadProfile();
+  }, [user]);
+
+  // ── Save profile handler ──────────────────────────────────────────────────
+  const handleProfileSave = async () => {
+    setProfileLoading(true);
+    setProfileSaved(false);
+    try {
+      await authService.updateProfile({
+        name: profileName.trim() || undefined,
+        company_name: profileCompany.trim() || undefined,
+      });
+      setProfileSaved(true);
+      toast.success('Profile updated successfully');
+      // Refresh user context
+      if (refreshUser) await refreshUser();
+      setTimeout(() => setProfileSaved(false), 3000);
+    } catch (err: any) {
+      const msg = err?.response?.data?.error || err?.response?.data?.detail || 'Failed to update profile';
+      toast.error(msg);
+    } finally {
+      setProfileLoading(false);
+    }
+  };
+
+  // ── Change password handler ───────────────────────────────────────────────
+  const handlePasswordChange = async () => {
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      toast.error('Please fill in all password fields');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      toast.error('New passwords do not match');
+      return;
+    }
+    if (newPassword.length < 8) {
+      toast.error('New password must be at least 8 characters');
+      return;
+    }
+
+    setPasswordLoading(true);
+    try {
+      await authService.changePassword({
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      toast.success('Password changed successfully');
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (err: any) {
+      const msg = err?.response?.data?.error || err?.response?.data?.detail || 'Failed to change password';
+      toast.error(msg);
+    } finally {
+      setPasswordLoading(false);
+    }
+  };
 
   return (
     <div className="p-6 md:p-8 space-y-8">
@@ -22,6 +112,7 @@ export default function Settings() {
       </div>
 
       <div className="grid gap-6 max-w-4xl">
+        {/* ── Company Profile ───────────────────────────────────────────── */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -40,26 +131,52 @@ export default function Settings() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div>
+                <label className="block text-sm mb-2">Display Name</label>
+                <Input
+                  id="settings-profile-name"
+                  value={profileName}
+                  onChange={(e) => setProfileName(e.target.value)}
+                  placeholder="Your name"
+                />
+              </div>
+              <div>
                 <label className="block text-sm mb-2">Company Name</label>
-                <Input defaultValue={user?.company_name} />
+                <Input
+                  id="settings-company-name"
+                  value={profileCompany}
+                  onChange={(e) => setProfileCompany(e.target.value)}
+                  placeholder="Company name"
+                />
               </div>
               <div>
                 <label className="block text-sm mb-2">Business Email</label>
-                <Input type="email" defaultValue={user?.email} />
+                <Input
+                  id="settings-email"
+                  type="email"
+                  value={profileEmail}
+                  disabled
+                  className="opacity-60"
+                />
+                <p className="text-xs text-muted-foreground mt-1">Email cannot be changed</p>
               </div>
-              <div>
-                <label className="block text-sm mb-2">Company Website</label>
-                <Input placeholder="https://yourcompany.com" />
-              </div>
-              <div>
-                <label className="block text-sm mb-2">Industry</label>
-                <Input placeholder="Sports Media" />
-              </div>
-              <Button>Save Changes</Button>
+              <Button
+                id="settings-save-profile"
+                onClick={handleProfileSave}
+                disabled={profileLoading}
+              >
+                {profileLoading ? (
+                  <><Loader2 className="h-4 w-4 animate-spin mr-2" /> Saving...</>
+                ) : profileSaved ? (
+                  <><CheckCircle2 className="h-4 w-4 mr-2" /> Saved!</>
+                ) : (
+                  'Save Changes'
+                )}
+              </Button>
             </CardContent>
           </Card>
         </motion.div>
 
+        {/* ── Notification Preferences ──────────────────────────────────── */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -110,6 +227,7 @@ export default function Settings() {
           </Card>
         </motion.div>
 
+        {/* ── Protection Settings ───────────────────────────────────────── */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -160,6 +278,7 @@ export default function Settings() {
           </Card>
         </motion.div>
 
+        {/* ── Security / Password ───────────────────────────────────────── */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -180,17 +299,48 @@ export default function Settings() {
             <CardContent className="space-y-4">
               <div>
                 <label className="block text-sm mb-2">Current Password</label>
-                <Input type="password" placeholder="Enter current password" />
+                <Input
+                  id="settings-current-password"
+                  type="password"
+                  placeholder="Enter current password"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                />
               </div>
               <div>
                 <label className="block text-sm mb-2">New Password</label>
-                <Input type="password" placeholder="Enter new password" />
+                <Input
+                  id="settings-new-password"
+                  type="password"
+                  placeholder="Enter new password (min 8 chars, 1 uppercase, 1 digit, 1 special)"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                />
               </div>
               <div>
                 <label className="block text-sm mb-2">Confirm New Password</label>
-                <Input type="password" placeholder="Confirm new password" />
+                <Input
+                  id="settings-confirm-password"
+                  type="password"
+                  placeholder="Confirm new password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                />
               </div>
-              <Button>Update Password</Button>
+              {newPassword && confirmPassword && newPassword !== confirmPassword && (
+                <p className="text-sm text-destructive">Passwords do not match</p>
+              )}
+              <Button
+                id="settings-update-password"
+                onClick={handlePasswordChange}
+                disabled={passwordLoading || !currentPassword || !newPassword || !confirmPassword || newPassword !== confirmPassword}
+              >
+                {passwordLoading ? (
+                  <><Loader2 className="h-4 w-4 animate-spin mr-2" /> Updating...</>
+                ) : (
+                  'Update Password'
+                )}
+              </Button>
             </CardContent>
           </Card>
         </motion.div>

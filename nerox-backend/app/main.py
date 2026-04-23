@@ -1,14 +1,15 @@
 """
-Nerox Backend — FastAPI Entry Point  (v5.0.0 — Phase 5: Invisible Watermarking System)
-===================================================================================
-Startup sequence (Phases 1–5):
+Nerox Backend — FastAPI Entry Point  (v7.0.0 — Phase 2: Enterprise-Grade Upgrade)
+==================================================================================
+Startup sequence:
   1. Ensure upload directory exists (static files mount).
-  2. Open MongoDB connection.
-  3. Create all required database indexes (assets + fingerprints + watermarks collections).
+  2. Open MongoDB connections (async Motor + sync PyMongo).
+  3. Create all required database indexes (including UNIQUE on users.email).
   4. Pre-load FAISS index from all completed embeddings in MongoDB.
 
 Shutdown:
-  5. Close MongoDB connection gracefully.
+  5. Gracefully shut down background TaskQueue.
+  6. Close MongoDB connections.
 """
 
 from contextlib import asynccontextmanager
@@ -26,7 +27,7 @@ from app.api.routes import detect as detect_router
 from app.api.routes import watermark as watermark_router
 from app.core.config import settings
 from app.core.logger import get_logger
-from app.db.mongodb import connect_to_mongo, close_mongo_connection
+from app.db.mongodb import connect_to_mongo, close_mongo_connection, get_sync_database
 from app.services.storage_service import ensure_upload_dir, UPLOAD_DIR
 
 logger = get_logger(__name__)
@@ -36,7 +37,7 @@ ensure_upload_dir()
 
 
 # ---------------------------------------------------------------------------
-# Database index setup
+# Database index setup (uses sync client — runs at startup)
 # ---------------------------------------------------------------------------
 
 def _create_indexes() -> None:
@@ -48,63 +49,72 @@ def _create_indexes() -> None:
     already exists under a *different* name (IndexOptionsConflict, code 85)
     we log a warning and continue — the collection is still indexed correctly,
     just under the old name.  Any other OperationFailure is re-raised.
+
+    Phase 2: Added UNIQUE index on users.email for data integrity.
     """
     from pymongo.errors import OperationFailure
-    from app.db.mongodb import get_database
+    from pymongo import ASCENDING, DESCENDING
 
-    db = get_database()
+    db = get_sync_database()
 
-    # (collection, key_list, index_name)
+    # (collection, key_list, index_name, unique)
     index_specs = [
-        # assets collection
-        ("assets", [("user_id", 1)],                       "idx_assets_user_id"),
-        ("assets", [("user_id", 1), ("created_at", -1)],   "idx_assets_user_created"),
-        # fingerprints collection
-        ("fingerprints", [("asset_id", 1)],                          "idx_fp_asset_id"),
-        ("fingerprints", [("user_id", 1)],                           "idx_fp_user_id"),
-        ("fingerprints", [("processing_status", 1)],                 "idx_fp_status"),
-        ("fingerprints", [("asset_id", 1), ("created_at", -1)],      "idx_fp_asset_created"),
-        # watermarks collection (Phase 5)
-        ("watermarks", [("asset_id", 1)],                            "idx_wm_asset_id"),
-        ("watermarks", [("user_id", 1)],                             "idx_wm_user_id"),
-        ("watermarks", [("wm_token", 1)],                            "idx_wm_token"),
-        ("watermarks", [("status", 1)],                              "idx_wm_status"),
-        ("watermarks", [("asset_id", 1), ("created_at", -1)],        "idx_wm_asset_created"),
-        # detections collection (Phase 6)
-        ("detections", [("user_id", 1)],                             "idx_det_user_id"),
-        ("detections", [("asset_id", 1)],                            "idx_det_asset_id"),
-        ("detections", [("detected_at", -1)],                        "idx_det_detected_at"),
-        ("detections", [("risk_score", -1)],                         "idx_det_risk_score"),
-        ("detections", [("platform_name", 1)],                       "idx_det_platform"),
-        ("detections", [("source_type", 1)],                         "idx_det_source_type"),
-        ("detections", [("user_id", 1), ("detected_at", -1)],        "idx_det_user_date"),
-        ("detections", [("asset_id", 1), ("detected_at", -1)],       "idx_det_asset_date"),
-        # alerts collection (Phase 6)
-        ("alerts", [("user_id", 1)],                                 "idx_alt_user_id"),
-        ("alerts", [("asset_id", 1)],                                "idx_alt_asset_id"),
-        ("alerts", [("alert_type", 1)],                              "idx_alt_type"),
-        ("alerts", [("severity", 1)],                                "idx_alt_severity"),
-        ("alerts", [("resolved", 1)],                                "idx_alt_resolved"),
-        ("alerts", [("triggered_at", -1)],                           "idx_alt_triggered_at"),
-        ("alerts", [("user_id", 1), ("resolved", 1), ("triggered_at", -1)], "idx_alt_user_active"),
+        # ── UNIQUE indexes (Phase 2 — Data Integrity) ────────────────────
+        ("users", [("email", ASCENDING)],                     "idx_users_email_unique", True),
+
+        # ── assets collection ─────────────────────────────────────────────
+        ("assets", [("user_id", ASCENDING)],                       "idx_assets_user_id",      False),
+        ("assets", [("user_id", ASCENDING), ("created_at", DESCENDING)], "idx_assets_user_created", False),
+        ("assets", [("created_at", DESCENDING)],                   "idx_assets_created_at",   False),
+
+        # ── fingerprints collection ───────────────────────────────────────
+        ("fingerprints", [("asset_id", ASCENDING)],                          "idx_fp_asset_id",      False),
+        ("fingerprints", [("user_id", ASCENDING)],                           "idx_fp_user_id",       False),
+        ("fingerprints", [("processing_status", ASCENDING)],                 "idx_fp_status",        False),
+        ("fingerprints", [("asset_id", ASCENDING), ("created_at", DESCENDING)], "idx_fp_asset_created", False),
+
+        # ── watermarks collection ─────────────────────────────────────────
+        ("watermarks", [("asset_id", ASCENDING)],                            "idx_wm_asset_id",      False),
+        ("watermarks", [("user_id", ASCENDING)],                             "idx_wm_user_id",       False),
+        ("watermarks", [("wm_token", ASCENDING)],                            "idx_wm_token",         False),
+        ("watermarks", [("status", ASCENDING)],                              "idx_wm_status",        False),
+        ("watermarks", [("asset_id", ASCENDING), ("created_at", DESCENDING)], "idx_wm_asset_created", False),
+
+        # ── detections collection ─────────────────────────────────────────
+        ("detections", [("user_id", ASCENDING)],                             "idx_det_user_id",      False),
+        ("detections", [("asset_id", ASCENDING)],                            "idx_det_asset_id",     False),
+        ("detections", [("detected_at", DESCENDING)],                        "idx_det_detected_at",  False),
+        ("detections", [("risk_score", DESCENDING)],                         "idx_det_risk_score",   False),
+        ("detections", [("platform_name", ASCENDING)],                       "idx_det_platform",     False),
+        ("detections", [("source_type", ASCENDING)],                         "idx_det_source_type",  False),
+        ("detections", [("user_id", ASCENDING), ("detected_at", DESCENDING)], "idx_det_user_date",   False),
+        ("detections", [("asset_id", ASCENDING), ("detected_at", DESCENDING)], "idx_det_asset_date", False),
+
+        # ── alerts collection ─────────────────────────────────────────────
+        ("alerts", [("user_id", ASCENDING)],                                 "idx_alt_user_id",       False),
+        ("alerts", [("asset_id", ASCENDING)],                                "idx_alt_asset_id",      False),
+        ("alerts", [("alert_type", ASCENDING)],                              "idx_alt_type",          False),
+        ("alerts", [("severity", ASCENDING)],                                "idx_alt_severity",      False),
+        ("alerts", [("resolved", ASCENDING)],                                "idx_alt_resolved",      False),
+        ("alerts", [("triggered_at", DESCENDING)],                           "idx_alt_triggered_at",  False),
+        ("alerts", [("user_id", ASCENDING), ("resolved", ASCENDING), ("triggered_at", DESCENDING)], "idx_alt_user_active", False),
+
+        # ── password_reset_tokens (Phase 2) ───────────────────────────────
+        ("users", [("reset_token_hash", ASCENDING)],              "idx_users_reset_token", False),
     ]
 
-    for collection, keys, name in index_specs:
+    for collection, keys, name, unique in index_specs:
         try:
-            db[collection].create_index(keys, name=name)
+            db[collection].create_index(keys, name=name, unique=unique)
             logger.debug("Index '%s' on '%s' — ready.", name, collection)
         except OperationFailure as exc:
             if exc.code == 85:
-                # IndexOptionsConflict: same keys, different name already exists.
-                # Existing index still accelerates queries — safe to skip.
                 logger.warning(
                     "Index '%s' on '%s': same keys exist under a different name. "
                     "Skipping (performance unaffected).",
                     name, collection,
                 )
             elif exc.code == 86:
-                # IndexKeySpecsConflict: same name exists but points to DIFFERENT keys.
-                # Drop the stale index and recreate with the correct key spec.
                 logger.warning(
                     "Index '%s' on '%s': name clash with different key spec. "
                     "Dropping stale index and recreating.",
@@ -112,7 +122,7 @@ def _create_indexes() -> None:
                 )
                 try:
                     db[collection].drop_index(name)
-                    db[collection].create_index(keys, name=name)
+                    db[collection].create_index(keys, name=name, unique=unique)
                     logger.info("Index '%s' on '%s' — recreated successfully.", name, collection)
                 except Exception as drop_exc:
                     logger.error(
@@ -122,7 +132,7 @@ def _create_indexes() -> None:
             else:
                 raise   # unexpected OperationFailure — propagate
 
-    logger.info("MongoDB indexes verified.")
+    logger.info("MongoDB indexes verified (Phase 2 — includes unique constraints).")
 
 
 
@@ -135,18 +145,18 @@ async def lifespan(app: FastAPI):
     """
     Startup
     -------
-    1. Connect to MongoDB.
+    1. Connect to MongoDB (async + sync).
     2. Create / verify required indexes.
     3. Pre-load FAISS index with all completed embeddings.
-    4. Log Phase 5 watermarking system readiness.
 
     Shutdown
     --------
-    Close MongoDB connection gracefully.
+    4. Shut down background TaskQueue.
+    5. Close MongoDB connections.
     """
-    logger.info("Nerox API v5.0.0 starting up …")
+    logger.info("Nerox API v7.0.0 starting up …")
 
-    connect_to_mongo()
+    await connect_to_mongo()
     _create_indexes()
 
     # Pre-populate FAISS with all existing completed embeddings
@@ -157,12 +167,20 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("FAISS pre-load skipped: %s", exc)
 
-    logger.info("Phase 5: Invisible watermarking system ready.")
+    logger.info("Phase 2: Enterprise-grade backend ready.")
 
     yield
 
     logger.info("Nerox API shutting down …")
-    close_mongo_connection()
+
+    # Graceful shutdown of background task system
+    try:
+        from app.services.task_queue import task_queue
+        await task_queue.shutdown(timeout=30.0)
+    except Exception as exc:
+        logger.warning("TaskQueue shutdown error: %s", exc)
+
+    await close_mongo_connection()
 
 
 # ---------------------------------------------------------------------------
@@ -173,13 +191,15 @@ app = FastAPI(
     title="Nerox API",
     description=(
         "## Nerox — AI-Powered Digital Asset Protection Platform\n\n"
-        "**v5.0.0 — Phase 5: Invisible Watermarking + Ownership Trace System**\n\n"
+        "**v7.0.0 — Phase 2: Enterprise-Grade Backend Upgrade**\n\n"
         "### Features\n"
-        "- **JWT Authentication** — register, login, protected endpoints\n"
+        "- **JWT Authentication** — register, login, profile, password management\n"
         "- **File Upload** — images (jpg/png) and videos (mp4/mov)\n"
         "- **AI Fingerprinting** — ResNet50 2048-d embeddings; similarity search via FAISS\n"
         "- **Invisible Watermarking** — DCT frequency-domain; survives JPEG Q70+, resize, mild edits\n"
-        "- **Ownership Trace** — `POST /watermark/verify` maps leaked content to original owner\n\n"
+        "- **Ownership Trace** — `POST /watermark/verify` maps leaked content to original owner\n"
+        "- **Async Database** — Motor (non-blocking MongoDB)\n"
+        "- **Background Workers** — Production task queue with retry logic\n\n"
         "### Recommended Workflow\n"
         "1. `POST /auth/login` → Authorize\n"
         "2. `POST /assets/upload` → note `asset_id`, `fingerprint_id`, `watermark_id`\n"
@@ -188,7 +208,7 @@ app = FastAPI(
         "5. `POST /detect`            → similarity search\n"
         "6. `POST /watermark/verify`  → ownership trace"
     ),
-    version="5.0.0",
+    version="7.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -286,7 +306,7 @@ app.include_router(analytics_router.router,  prefix="/analytics",  tags=["Analyt
 # ---------------------------------------------------------------------------
 
 @app.get("/health", tags=["Health"], summary="Liveness probe")
-def health_check() -> dict:
+async def health_check() -> dict:
     """Returns server version, storage backend, FAISS index size, and watermark stats."""
     try:
         from app.services.vector_service import get_vector_index
@@ -294,12 +314,12 @@ def health_check() -> dict:
     except Exception:
         faiss_vectors = -1
 
-    # Watermark statistics
+    # Watermark statistics (async)
     try:
         from app.db.mongodb import get_database
         db = get_database()
-        wm_total     = db["watermarks"].count_documents({})
-        wm_completed = db["watermarks"].count_documents({"status": "completed"})
+        wm_total     = await db["watermarks"].count_documents({})
+        wm_completed = await db["watermarks"].count_documents({"status": "completed"})
     except Exception:
         wm_total = -1
         wm_completed = -1
@@ -307,7 +327,7 @@ def health_check() -> dict:
     return {
         "status":           "ok",
         "service":          "nerox-api",
-        "version":          "5.0.0",
+        "version":          "7.0.0",
         "storage":          settings.STORAGE_TYPE,
         "faiss_vectors":    faiss_vectors,
         "wm_completed":     wm_completed,

@@ -1,4 +1,17 @@
-import { createBrowserRouter, Navigate } from 'react-router';
+/**
+ * src/app/routes.tsx
+ * ===================
+ * Phase 2: Refactored to nested route architecture.
+ *
+ * Before: Flat, redundant <ProtectedRoute><DashboardLayout><Page/></DashboardLayout></ProtectedRoute>
+ * After:  Clean nested routes with shared layout — DRY + scalable.
+ *
+ * New routes:
+ *   /forgot-password  → ForgotPassword page
+ *   /reset-password   → ResetPassword page (token via query param)
+ */
+
+import { createBrowserRouter, Navigate, Outlet } from 'react-router';
 import { useAuth } from '../context/AuthContext';
 import Landing from './pages/Landing';
 import Features from './pages/Features';
@@ -8,6 +21,8 @@ import About from './pages/About';
 import Contact from './pages/Contact';
 import Login from './pages/Login';
 import Register from './pages/Register';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
 import { DashboardLayout } from './components/DashboardLayout';
 import DashboardHome from './pages/dashboard/DashboardHome';
 import Upload from './pages/dashboard/Upload';
@@ -18,126 +33,61 @@ import Alerts from './pages/dashboard/Alerts';
 import Verification from './pages/dashboard/Verification';
 import Settings from './pages/dashboard/Settings';
 
-function ProtectedRoute({ children }: { children: React.ReactNode }) {
+/**
+ * ProtectedRoute wrapper — redirects to /login if not authenticated.
+ * Uses <Outlet /> for nested child routes.
+ */
+function ProtectedRoute() {
   const { isAuthenticated } = useAuth();
-  return isAuthenticated ? <>{children}</> : <Navigate to="/login" replace />;
+  return isAuthenticated ? <Outlet /> : <Navigate to="/login" replace />;
+}
+
+/**
+ * ProtectedDashboard — wraps children in DashboardLayout.
+ * Renders child routes via <Outlet /> inside the layout shell.
+ */
+function ProtectedDashboard() {
+  return (
+    <DashboardLayout>
+      <Outlet />
+    </DashboardLayout>
+  );
 }
 
 export const router = createBrowserRouter([
+  // ── Public routes ─────────────────────────────────────────────────────────
+  { path: '/',               Component: Landing },
+  { path: '/features',       Component: Features },
+  { path: '/demo',           Component: Demo },
+  { path: '/pricing',        Component: Pricing },
+  { path: '/about',          Component: About },
+  { path: '/contact',        Component: Contact },
+  { path: '/login',          Component: Login },
+  { path: '/register',       Component: Register },
+  { path: '/forgot-password', Component: ForgotPassword },
+  { path: '/reset-password',  Component: ResetPassword },
+
+  // ── Protected dashboard routes (nested layout) ────────────────────────────
   {
-    path: '/',
-    Component: Landing,
+    element: <ProtectedRoute />,
+    children: [
+      {
+        path: '/dashboard',
+        element: <ProtectedDashboard />,
+        children: [
+          { index: true,           Component: DashboardHome },
+          { path: 'upload',        Component: Upload },
+          { path: 'assets',        Component: Assets },
+          { path: 'detections',    Component: Detections },
+          { path: 'analytics',     Component: Analytics },
+          { path: 'alerts',        Component: Alerts },
+          { path: 'verification',  Component: Verification },
+          { path: 'settings',      Component: Settings },
+        ],
+      },
+    ],
   },
-  {
-    path: '/features',
-    Component: Features,
-  },
-  {
-    path: '/demo',
-    Component: Demo,
-  },
-  {
-    path: '/pricing',
-    Component: Pricing,
-  },
-  {
-    path: '/about',
-    Component: About,
-  },
-  {
-    path: '/contact',
-    Component: Contact,
-  },
-  {
-    path: '/login',
-    Component: Login,
-  },
-  {
-    path: '/register',
-    Component: Register,
-  },
-  {
-    path: '/dashboard',
-    element: (
-      <ProtectedRoute>
-        <DashboardLayout>
-          <DashboardHome />
-        </DashboardLayout>
-      </ProtectedRoute>
-    ),
-  },
-  {
-    path: '/dashboard/upload',
-    element: (
-      <ProtectedRoute>
-        <DashboardLayout>
-          <Upload />
-        </DashboardLayout>
-      </ProtectedRoute>
-    ),
-  },
-  {
-    path: '/dashboard/assets',
-    element: (
-      <ProtectedRoute>
-        <DashboardLayout>
-          <Assets />
-        </DashboardLayout>
-      </ProtectedRoute>
-    ),
-  },
-  {
-    path: '/dashboard/detections',
-    element: (
-      <ProtectedRoute>
-        <DashboardLayout>
-          <Detections />
-        </DashboardLayout>
-      </ProtectedRoute>
-    ),
-  },
-  {
-    path: '/dashboard/analytics',
-    element: (
-      <ProtectedRoute>
-        <DashboardLayout>
-          <Analytics />
-        </DashboardLayout>
-      </ProtectedRoute>
-    ),
-  },
-  {
-    path: '/dashboard/alerts',
-    element: (
-      <ProtectedRoute>
-        <DashboardLayout>
-          <Alerts />
-        </DashboardLayout>
-      </ProtectedRoute>
-    ),
-  },
-  {
-    path: '/dashboard/verification',
-    element: (
-      <ProtectedRoute>
-        <DashboardLayout>
-          <Verification />
-        </DashboardLayout>
-      </ProtectedRoute>
-    ),
-  },
-  {
-    path: '/dashboard/settings',
-    element: (
-      <ProtectedRoute>
-        <DashboardLayout>
-          <Settings />
-        </DashboardLayout>
-      </ProtectedRoute>
-    ),
-  },
-  {
-    path: '*',
-    element: <Navigate to="/" replace />,
-  },
+
+  // ── Catch-all ──────────────────────────────────────────────────────────────
+  { path: '*', element: <Navigate to="/" replace /> },
 ]);

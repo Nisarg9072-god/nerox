@@ -1,12 +1,13 @@
 /**
  * src/context/AuthContext.tsx
  * ============================
- * Production auth context — connected to the real Nerox FastAPI backend.
+ * Production auth context — Phase 2 Enterprise Upgrade.
  *
  * Flow:
- *   login()    → POST /auth/login → store JWT → GET /auth/me → store user
+ *   login()    → POST /auth/login → store JWT → GET /auth/profile → store user
  *   register() → POST /auth/register → POST /auth/login (auto) → same as above
  *   logout()   → clear localStorage
+ *   refreshUser() → GET /auth/profile → update stored profile (for settings)
  *
  * Session persistence: JWT and user profile survive page refresh via localStorage.
  * Token expiry: the Axios 401 interceptor (api.ts) auto-clears and redirects.
@@ -24,14 +25,39 @@ import { toast } from 'sonner';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
+/** Frontend user shape (camelCase for React conventions) */
+export interface AuthUser {
+  id: string;
+  name: string;
+  companyName: string;
+  email: string;
+  company_name: string;   // keep snake_case alias for backward compat
+  created_at: string | null;
+}
+
 type AuthContextType = {
-  user: UserProfile | null;
+  user: AuthUser | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (companyName: string, email: string, password: string) => Promise<void>;
   logout: () => void;
+  refreshUser: () => Promise<void>;
 };
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Map backend UserProfile (snake_case) to AuthUser (camelCase). */
+function profileToUser(profile: UserProfile): AuthUser {
+  return {
+    id: profile.id,
+    name: profile.name || profile.company_name || '',
+    companyName: profile.company_name || '',
+    company_name: profile.company_name || '',
+    email: profile.email,
+    created_at: profile.created_at,
+  };
+}
 
 // ── Context ──────────────────────────────────────────────────────────────────
 
@@ -40,10 +66,10 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 // ── Provider ─────────────────────────────────────────────────────────────────
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<UserProfile | null>(() => {
+  const [user, setUser] = useState<AuthUser | null>(() => {
     try {
       const stored = localStorage.getItem('nerox_user');
-      return stored ? (JSON.parse(stored) as UserProfile) : null;
+      return stored ? (JSON.parse(stored) as AuthUser) : null;
     } catch {
       return null;
     }
@@ -52,11 +78,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(false);
 
   /** Persist tokens + user; update state. */
-  const _storeSession = useCallback((token: string, refreshToken: string, profile: UserProfile) => {
+  const _storeSession = useCallback((token: string, refreshToken: string, authUser: AuthUser) => {
     localStorage.setItem('nerox_token', token);
     localStorage.setItem('nerox_refresh_token', refreshToken);
-    localStorage.setItem('nerox_user', JSON.stringify(profile));
-    setUser(profile);
+    localStorage.setItem('nerox_user', JSON.stringify(authUser));
+    setUser(authUser);
   }, []);
 
   // ── login ─────────────────────────────────────────────────────────────────
@@ -71,14 +97,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       localStorage.setItem('nerox_token', tokenResp.access_token);
       localStorage.setItem('nerox_refresh_token', tokenResp.refresh_token);
 
-      // 3. Fetch full profile
-      const profile = await authService.getMe();
+      // 3. Fetch full profile (Phase 2: use /auth/profile instead of /auth/me)
+      let profile: UserProfile;
+      try {
+        profile = await authService.getProfile();
+      } catch {
+        // Fallback to legacy /auth/me
+        profile = await authService.getMe();
+      }
 
       // 4. Finalize session
-      _storeSession(tokenResp.access_token, tokenResp.refresh_token, profile);
-      toast.success(`Welcome back, ${profile.company_name}!`);
+      const authUser = profileToUser(profile);
+      _storeSession(tokenResp.access_token, tokenResp.refresh_token, authUser);
+      toast.success(`Welcome back, ${authUser.companyName || authUser.email}!`);
     } catch (err: any) {
-      // Re-throw so the Login page can display the message
       const msg =
         err?.response?.data?.error ||
         err?.response?.data?.detail ||
@@ -105,8 +137,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         localStorage.setItem('nerox_refresh_token', tokenResp.refresh_token);
 
         // 3. Fetch profile
-        const profile = await authService.getMe();
-        _storeSession(tokenResp.access_token, tokenResp.refresh_token, profile);
+        let profile: UserProfile;
+        try {
+          profile = await authService.getProfile();
+        } catch {
+          profile = await authService.getMe();
+        }
+        const authUser = profileToUser(profile);
+        _storeSession(tokenResp.access_token, tokenResp.refresh_token, authUser);
 
         toast.success('Account created — welcome to Nerox!');
       } catch (err: any) {
@@ -133,6 +171,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     toast.info('You have been signed out.');
   }, []);
 
+  // ── refreshUser (Phase 2) — re-fetches profile from API ────────────────────
+
+  const refreshUser = useCallback(async () => {
+    try {
+      const profile = await authService.getProfile();
+      const authUser = profileToUser(profile);
+      localStorage.setItem('nerox_user', JSON.stringify(authUser));
+      setUser(authUser);
+    } catch {
+      // Silent fail — user may still have a valid session
+    }
+  }, []);
+
   // ── Provider value ────────────────────────────────────────────────────────
 
   return (
@@ -144,6 +195,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         login,
         register,
         logout,
+        refreshUser,
       }}
     >
       {children}

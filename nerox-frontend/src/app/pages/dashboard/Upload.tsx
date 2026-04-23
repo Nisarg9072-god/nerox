@@ -27,7 +27,15 @@ export default function Upload() {
     setFiles(prev => prev.map(f => (f.id === id ? { ...f, ...patch } : f)));
   }, []);
 
+  const MAX_FILE_SIZE_MB = 50;
+
   const uploadFile = useCallback(async (file: File) => {
+    // Client-side file size validation (matches backend MAX_FILE_SIZE_MB)
+    if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+      toast.error(`${file.name}: File exceeds the maximum allowed size of ${MAX_FILE_SIZE_MB}MB.`);
+      return;
+    }
+
     const fid = `${file.name}-${Date.now()}`;
     const entry: UploadedFile = {
       id:       fid,
@@ -111,7 +119,7 @@ export default function Upload() {
                     />
                     <Button asChild><span>Select Files</span></Button>
                   </label>
-                  <p className="text-sm text-muted-foreground mt-4">Supported: JPG, PNG, MP4, MOV (Max 500MB)</p>
+                  <p className="text-sm text-muted-foreground mt-4">Supported: JPG, PNG, MP4, MOV (Max 50MB)</p>
                 </div>
               </div>
 

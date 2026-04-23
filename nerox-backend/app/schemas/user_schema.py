@@ -11,6 +11,9 @@ that:
   • The API contract can evolve independently of the database schema.
 """
 
+from datetime import datetime
+from typing import Optional
+
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
@@ -143,6 +146,142 @@ class RefreshRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Profile (Phase 2)
+# ---------------------------------------------------------------------------
+
+class ProfileResponse(BaseModel):
+    """
+    Returned by ``GET /auth/profile``.
+    """
+    id: str = Field(..., description="User ID (MongoDB ObjectId).")
+    name: str = Field(default="", description="Display name of the user.")
+    email: EmailStr = Field(..., description="E-mail address.")
+    company_name: str = Field(default="", description="Company name.")
+    created_at: Optional[str] = Field(None, description="Account creation timestamp (ISO 8601).")
+
+
+class ProfileUpdateRequest(BaseModel):
+    """
+    Payload for ``PUT /auth/profile``.
+    Email cannot be changed through this endpoint.
+    """
+    name: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=120,
+        description="Display name.",
+    )
+    company_name: Optional[str] = Field(
+        None,
+        min_length=2,
+        max_length=120,
+        description="Company name.",
+    )
+
+    @field_validator("name", "company_name", mode="before")
+    @classmethod
+    def strip_and_sanitize(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            v = v.strip()
+            # Basic HTML tag stripping
+            import re
+            v = re.sub(r"<[^>]+>", "", v)
+        return v
+
+
+# ---------------------------------------------------------------------------
+# Password Change (Phase 2)
+# ---------------------------------------------------------------------------
+
+class PasswordChangeRequest(BaseModel):
+    """
+    Payload for ``PATCH /auth/password``.
+    """
+    current_password: str = Field(
+        ...,
+        description="Current password for verification.",
+    )
+    new_password: str = Field(
+        ...,
+        min_length=8,
+        description="New password. Must meet complexity requirements.",
+    )
+
+    @field_validator("new_password")
+    @classmethod
+    def password_complexity(cls, v: str) -> str:
+        if not any(c.isupper() for c in v):
+            raise ValueError("Password must contain at least one uppercase letter.")
+        if not any(c.isdigit() for c in v):
+            raise ValueError("Password must contain at least one digit.")
+        if not any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?/~`" for c in v):
+            raise ValueError("Password must contain at least one special character.")
+        return v
+
+
+# ---------------------------------------------------------------------------
+# Forgot / Reset Password (Phase 2)
+# ---------------------------------------------------------------------------
+
+class ForgotPasswordRequest(BaseModel):
+    """
+    Payload for ``POST /auth/forgot-password``.
+    """
+    email: EmailStr = Field(
+        ...,
+        examples=["admin@acmecorp.io"],
+        description="Registered e-mail address.",
+    )
+
+
+class ForgotPasswordResponse(BaseModel):
+    """
+    Returned by ``POST /auth/forgot-password``.
+    Always returns success to prevent email enumeration.
+    """
+    message: str = Field(
+        default="If this email is registered, a password reset link has been sent.",
+        description="Status message.",
+    )
+
+
+class ResetPasswordRequest(BaseModel):
+    """
+    Payload for ``POST /auth/reset-password``.
+    """
+    token: str = Field(
+        ...,
+        description="Password reset token received via email.",
+    )
+    new_password: str = Field(
+        ...,
+        min_length=8,
+        description="New password. Must meet complexity requirements.",
+    )
+
+    @field_validator("new_password")
+    @classmethod
+    def password_complexity(cls, v: str) -> str:
+        if not any(c.isupper() for c in v):
+            raise ValueError("Password must contain at least one uppercase letter.")
+        if not any(c.isdigit() for c in v):
+            raise ValueError("Password must contain at least one digit.")
+        if not any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?/~`" for c in v):
+            raise ValueError("Password must contain at least one special character.")
+        return v
+
+
+class ResetPasswordResponse(BaseModel):
+    """
+    Returned by ``POST /auth/reset-password``.
+    """
+    message: str = Field(
+        default="Password has been reset successfully. You can now log in.",
+        description="Status message.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Shared / utility
 # ---------------------------------------------------------------------------
 
@@ -152,4 +291,3 @@ class ErrorDetail(BaseModel):
     """
 
     detail: str = Field(..., description="Human-readable error description.")
-

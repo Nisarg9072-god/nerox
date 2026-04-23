@@ -2,6 +2,7 @@
 app/api/routes/analytics.py
 ==============================
 Phase 6 Analytics + Piracy Spread Tracking endpoints.
+Phase 2: All handlers converted to async.
 
 All endpoints require JWT authentication and are scoped to the authenticated
 user's data. They never return data belonging to other users.
@@ -19,6 +20,7 @@ Routes
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -27,7 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 
 from app.core.dependencies import get_current_user
 from app.core.logger import get_logger
-from app.db.mongodb import get_database
+from app.db.mongodb import get_database, get_sync_database
 from app.schemas.analytics_schema import (
     AlertItem,
     AlertListResponse,
@@ -82,13 +84,13 @@ ALERTS_COL     = "alerts"
         "All data is scoped to the authenticated user's assets only."
     ),
 )
-def dashboard(
+async def dashboard(
     current_user: Annotated[dict, Depends(get_current_user)],
 ) -> DashboardResponse:
     user_id = str(current_user["_id"])
 
     try:
-        data = get_dashboard(user_id)
+        data = await asyncio.to_thread(get_dashboard, user_id)
     except Exception as exc:
         logger.exception("Dashboard aggregation failed — user=%s: %s", user_id, exc)
         raise HTTPException(
@@ -142,14 +144,14 @@ def dashboard(
         "Only assets with at least one detection record are returned."
     ),
 )
-def high_risk_assets(
+async def high_risk_assets(
     current_user: Annotated[dict, Depends(get_current_user)],
     limit: int = Query(default=20, ge=1, le=100, description="Maximum results to return."),
 ) -> HighRiskResponse:
     user_id = str(current_user["_id"])
 
     try:
-        data = get_high_risk_assets(user_id, limit=limit)
+        data = await asyncio.to_thread(get_high_risk_assets, user_id, limit)
     except Exception as exc:
         logger.exception("High-risk aggregation failed — user=%s: %s", user_id, exc)
         raise HTTPException(
@@ -181,7 +183,7 @@ def high_risk_assets(
         "Use `period=week` for long-term piracy growth trends."
     ),
 )
-def timeline(
+async def timeline(
     current_user: Annotated[dict, Depends(get_current_user)],
     period: str = Query(
         default="day",
@@ -198,7 +200,7 @@ def timeline(
     user_id = str(current_user["_id"])
 
     try:
-        data = get_timeline(user_id, period=period, days=days)
+        data = await asyncio.to_thread(get_timeline, user_id, period, days)
     except Exception as exc:
         logger.exception("Timeline aggregation failed — user=%s: %s", user_id, exc)
         raise HTTPException(
@@ -232,13 +234,13 @@ def timeline(
         "Sorted by detection count (highest first)."
     ),
 )
-def platforms(
+async def platforms(
     current_user: Annotated[dict, Depends(get_current_user)],
 ) -> PlatformsResponse:
     user_id = str(current_user["_id"])
 
     try:
-        data = get_platform_breakdown(user_id)
+        data = await asyncio.to_thread(get_platform_breakdown, user_id)
     except Exception as exc:
         logger.exception("Platform aggregation failed — user=%s: %s", user_id, exc)
         raise HTTPException(
@@ -270,12 +272,12 @@ def platforms(
         "Use `POST /analytics/alerts/{id}/resolve` to dismiss an alert."
     ),
 )
-def get_alerts(
+async def get_alerts(
     current_user: Annotated[dict, Depends(get_current_user)],
     limit: int = Query(default=50, ge=1, le=200),
 ) -> AlertListResponse:
     user_id = str(current_user["_id"])
-    docs    = get_active_alerts(user_id, limit=limit)
+    docs    = await asyncio.to_thread(get_active_alerts, user_id, limit)
 
     items = [
         AlertItem(
@@ -307,16 +309,16 @@ def get_alerts(
         404: {"description": "Alert not found"},
     },
 )
-def resolve_alert_endpoint(
+async def resolve_alert_endpoint(
     alert_id: str,
     current_user: Annotated[dict, Depends(get_current_user)],
 ) -> dict:
     user_id = str(current_user["_id"])
-    ok      = resolve_alert(alert_id, user_id)
+    ok      = await asyncio.to_thread(resolve_alert, alert_id, user_id)
 
     if not ok:
         # Either not found or doesn't belong to user
-        db = get_database()
+        db = get_sync_database()
         try:
             exists = db[ALERTS_COL].find_one({"_id": ObjectId(alert_id)})
         except Exception:
@@ -357,12 +359,12 @@ def resolve_alert_endpoint(
         404: {"description": "Asset not found"},
     },
 )
-def manual_detection(
+async def manual_detection(
     body: DetectionCreate,
     current_user: Annotated[dict, Depends(get_current_user)],
 ) -> DetectionItem:
     user_id = str(current_user["_id"])
-    db      = get_database()
+    db      = get_sync_database()
 
     # ── Validate asset ownership ──────────────────────────────────────────────
     try:

@@ -130,9 +130,8 @@ async def verify_watermark(
         )
         # Append audit entry (non-fatal)
         try:
-            from datetime import datetime, timezone
             db = get_database()
-            db[WATERMARKS_COL].update_one(
+            await db[WATERMARKS_COL].update_one(
                 {"wm_token": result.wm_token_hex},
                 {
                     "$push": {
@@ -189,7 +188,7 @@ async def verify_watermark(
     summary="Watermark sub-system health",
     description="Returns statistics about the watermarks collection.",
 )
-def watermark_health(
+async def watermark_health(
     current_user: Annotated[dict, Depends(get_current_user)],
 ) -> dict:
     db = get_database()
@@ -197,7 +196,9 @@ def watermark_health(
     pipeline = [
         {"$group": {"_id": "$status", "count": {"$sum": 1}}}
     ]
-    counts = {doc["_id"]: doc["count"] for doc in db[WATERMARKS_COL].aggregate(pipeline)}
+    counts = {}
+    async for doc in db[WATERMARKS_COL].aggregate(pipeline):
+        counts[doc["_id"]] = doc["count"]
 
     return {
         "service":   "nerox-watermark",

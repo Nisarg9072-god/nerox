@@ -35,7 +35,7 @@ from typing import Optional
 from bson import ObjectId
 
 from app.core.logger import get_logger
-from app.db.mongodb import get_database
+from app.db.mongodb import get_sync_database as get_database
 
 logger = get_logger(__name__)
 

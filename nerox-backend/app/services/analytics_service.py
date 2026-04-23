@@ -29,7 +29,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from app.core.logger import get_logger
-from app.db.mongodb import get_database
+from app.db.mongodb import get_sync_database as get_database
 from app.services.risk_engine import PLATFORM_SEVERITY
 
 logger = get_logger(__name__)

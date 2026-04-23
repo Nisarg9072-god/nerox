@@ -1,16 +1,16 @@
 """
 app/services/watermark_service.py
 ===================================
-Orchestration layer for Phase 5 background watermarking pipeline.
+Phase 2 Enterprise Upgrade: Async record creation + sync thread-pool pipeline.
 
-Synchronous API (called before HTTP response is sent)
+Synchronous API (async — called before HTTP response)
 ------------------------------------------------------
   create_watermark_record(asset_id, user_id, file_type) → watermark_doc_id
     Inserts a 'watermarks' document with status='pending'.
     Returns immediately so the client gets a watermark_id in the upload response.
 
-Asynchronous API (BackgroundTask — runs after HTTP response)
-------------------------------------------------------------
+Background API (sync — runs in TaskQueue thread pool)
+------------------------------------------------------
   process_watermark(watermark_doc_id, asset_id, user_id, file_path, file_type)
     Steps:
       1. Mark record → 'processing'
@@ -18,20 +18,10 @@ Asynchronous API (BackgroundTask — runs after HTTP response)
       3. Embed watermark into file (overwrites original in place)
       4. Store wm_token + SHA-256 hash in DB, mark → 'completed'
       5. Link watermark_id back to the asset document
-      On any exception: mark → 'failed', populate error_message, never crash.
-
-Retry safety
-------------
-  - Each watermark document has its own wm_token (no shared state).
-  - If process_watermark fails and is retried, a new unique token is generated
-    and the old document is updated — no stale tokens.
-  - File-level operations use atomic temp→rename (via video_watermark) or
-    direct overwrite (image_watermark) — no partial files are left behind.
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import os
 import time
@@ -40,7 +30,7 @@ from datetime import datetime, timezone
 from bson import ObjectId
 
 from app.core.logger import get_logger
-from app.db.mongodb import get_database
+from app.db.mongodb import get_database, get_sync_database
 
 logger = get_logger(__name__)
 
@@ -49,27 +39,16 @@ ASSETS_COL     = "assets"
 
 
 # ---------------------------------------------------------------------------
-# Synchronous: create pending record
+# Async: create pending record
 # ---------------------------------------------------------------------------
 
-def create_watermark_record(
+async def create_watermark_record(
     asset_id:  str,
     user_id:   str,
     file_type: str,
 ) -> str:
     """
-    Insert a watermark document with status='pending' and return its ObjectId.
-
-    Called synchronously inside POST /assets/upload before the HTTP response
-    so the client receives a watermark_id and can immediately poll status.
-
-    Args:
-        asset_id:  MongoDB ObjectId string of the parent asset.
-        user_id:   MongoDB ObjectId string of the owning user.
-        file_type: 'image' | 'video'
-
-    Returns:
-        watermark_doc_id — MongoDB ObjectId as a string.
+    Insert a watermark document with status='pending' and return its ObjectId (async).
     """
     db = get_database()
 
@@ -89,7 +68,7 @@ def create_watermark_record(
         "verification_logs":      [],
     }
 
-    result = db[WATERMARKS_COL].insert_one(doc)
+    result = await db[WATERMARKS_COL].insert_one(doc)
     wm_id  = str(result.inserted_id)
 
     logger.info(
@@ -100,10 +79,10 @@ def create_watermark_record(
 
 
 # ---------------------------------------------------------------------------
-# Asynchronous: full embedding pipeline (BackgroundTask)
+# Sync: full embedding pipeline (TaskQueue thread pool)
 # ---------------------------------------------------------------------------
 
-async def process_watermark(
+def process_watermark(
     watermark_doc_id: str,
     asset_id:         str,
     user_id:          str,
@@ -111,20 +90,14 @@ async def process_watermark(
     file_type:        str,
 ) -> None:
     """
-    Background coroutine: generate token, embed watermark into file, update DB.
+    Synchronous watermark pipeline — designed to run inside TaskQueue's
+    thread pool. Uses sync PyMongo client.
 
-    Designed to be passed to FastAPI BackgroundTasks.add_task().
-    Never raises — all exceptions are caught, logged, and persisted to DB.
-
-    Args:
-        watermark_doc_id: MongoDB ObjectId of the watermark record.
-        asset_id:         MongoDB ObjectId of the parent asset.
-        user_id:          MongoDB ObjectId of the owning user.
-        file_path:        Absolute path to the stored file.
-        file_type:        'image' | 'video'
+    Never raises to the caller unless retry is needed — all exceptions are
+    caught, logged, and persisted to DB. Re-raises so TaskQueue can retry.
     """
     t_start = time.perf_counter()
-    db      = get_database()
+    db      = get_sync_database()
     wm_oid  = ObjectId(watermark_doc_id)
     a_oid   = ObjectId(asset_id)
 
@@ -144,11 +117,11 @@ async def process_watermark(
         wm_token:  bytes = os.urandom(8)            # 64 random bits
         wm_hash:   str   = hashlib.sha256(wm_token).hexdigest()
 
-        # ── 3. Embed watermark into file (CPU-bound → thread pool) ────────────
+        # ── 3. Embed watermark into file ──────────────────────────────────────
         if file_type == "image":
-            await asyncio.to_thread(_embed_image, file_path, wm_token)
+            _embed_image(file_path, wm_token)
         elif file_type == "video":
-            await asyncio.to_thread(_embed_video, file_path, wm_token)
+            _embed_video(file_path, wm_token)
         else:
             raise ValueError(f"Unsupported file_type: '{file_type}'")
 
@@ -183,7 +156,7 @@ async def process_watermark(
         )
 
     except Exception as exc:
-        # ── Failure path (never crash) ────────────────────────────────────────
+        # ── Failure path ──────────────────────────────────────────────────────
         elapsed_ms = (time.perf_counter() - t_start) * 1_000
         error_msg  = str(exc)
 
@@ -209,10 +182,11 @@ async def process_watermark(
                 "Failed to persist watermark failure state for wm_id=%s: %s",
                 watermark_doc_id, db_exc,
             )
+        raise  # Re-raise so TaskQueue can handle retry
 
 
 # ---------------------------------------------------------------------------
-# Private CPU-bound helpers — run in thread pool
+# Private CPU-bound helpers
 # ---------------------------------------------------------------------------
 
 def _embed_image(file_path: str, wm_token: bytes) -> None:

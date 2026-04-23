@@ -7,6 +7,8 @@ FastAPI dependency functions shared across multiple routers.
     Extracts and validates the JWT Bearer token from the Authorization header,
     then returns the authenticated user document from MongoDB.
     Inject with: ``current_user: dict = Depends(get_current_user)``
+
+Phase 2: Migrated to async Motor database calls.
 """
 
 import logging
@@ -27,7 +29,7 @@ logger = logging.getLogger(__name__)
 _bearer_scheme = HTTPBearer(auto_error=True)
 
 
-def get_current_user(
+async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer_scheme)],
 ) -> dict:
     """
@@ -74,10 +76,10 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # --- 4. Fetch user from DB ---
+    # --- 4. Fetch user from DB (async) ---
     try:
         db = get_database()
-        user_doc = db["users"].find_one({"_id": ObjectId(user_id)})
+        user_doc = await db["users"].find_one({"_id": ObjectId(user_id)})
     except Exception:
         # ObjectId conversion failure or DB error
         raise HTTPException(

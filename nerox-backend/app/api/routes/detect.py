@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 
 from app.core.dependencies import get_current_user
 from app.core.logger import get_logger
-from app.db.mongodb import get_database
+from app.db.mongodb import get_database, get_sync_database
 from app.schemas.detect_schema import DetectionMatch, DetectionResponse
 from app.services.detection_service import create_detection
 from app.services.file_service import detect_file_type, validate_file
@@ -165,7 +165,7 @@ async def detect_similarity(
             )
 
         # 2. Fetch doc + ownership check
-        doc = get_database()["assets"].find_one({"_id": oid})
+        doc = await get_database()["assets"].find_one({"_id": oid})
         if doc is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

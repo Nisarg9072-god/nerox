@@ -102,8 +102,8 @@ class VectorIndex:
             return 0
 
         try:
-            from app.db.mongodb import get_database
-            db  = get_database()
+            from app.db.mongodb import get_sync_database
+            db  = get_sync_database()
             col = db["assets"]
 
             docs = list(col.find(

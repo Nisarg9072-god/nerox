@@ -1,7 +1,10 @@
 """
 app/api/routes/assets.py
 =========================
-Asset management endpoints — Phase 5 (Invisible Watermarking).
+Asset management endpoints — Phase 2 Enterprise Upgrade.
+
+All DB calls converted to async Motor.
+BackgroundTasks replaced with production-grade TaskQueue.
 
 Endpoints
 ---------
@@ -9,25 +12,7 @@ POST   /assets/upload                        — Upload, fingerprint + watermark
 GET    /assets                               — List all assets (current user)
 GET    /assets/{asset_id}                    — Single asset with full status
 GET    /assets/{asset_id}/fingerprint-status — Fingerprint job details
-GET    /assets/{asset_id}/watermark-status   — Watermark job details (Phase 5)
-
-Upload lifecycle (Phase 5)
---------------------------
-1.  File validated (extension + MIME + magic bytes).
-2.  File stored on disk.
-3.  Asset document inserted with status='processing'.
-4.  Fingerprint record created (status='pending').
-5.  Watermark record created (status='pending').
-6.  Asset updated with fingerprint_id + watermark_id references.
-7.  HTTP 201 returned immediately.
-8.  Background tasks (independent, parallel-ish via FastAPI):
-      a. process_fingerprint()  → ResNet50 embedding → FAISS
-      b. process_watermark()    → DCT embed into file → DB update
-
-Polling:
-    GET /assets/{id}/fingerprint-status until processing_status='completed'
-    GET /assets/{id}/watermark-status   until status='completed'
-    Then POST /detect (similarity) | POST /watermark/verify (ownership trace)
+GET    /assets/{asset_id}/watermark-status   — Watermark job details
 """
 
 from __future__ import annotations
@@ -38,7 +23,6 @@ from typing import Annotated
 from bson import ObjectId
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     HTTPException,
@@ -63,6 +47,7 @@ from app.services.file_service import (
 from app.services.fingerprint_service import create_fingerprint_record, process_fingerprint
 from app.services.storage_service import get_storage
 from app.services.watermark_service import create_watermark_record, process_watermark
+from app.services.task_queue import task_queue
 
 logger = get_logger(__name__)
 
@@ -117,7 +102,6 @@ def _doc_to_asset_item(doc: dict) -> AssetItem:
     ),
 )
 async def upload_asset(
-    background_tasks: BackgroundTasks,
     current_user: Annotated[dict, Depends(get_current_user)],
     file: UploadFile = File(
         ...,
@@ -164,7 +148,7 @@ async def upload_asset(
         storage.delete_file(file_path)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
-    # ── Insert asset document ─────────────────────────────────────────────────
+    # ── Insert asset document (async) ─────────────────────────────────────────
     asset_doc = {
         "user_id":           user_id,
         "filename":          unique_filename,
@@ -182,7 +166,7 @@ async def upload_asset(
 
     db = get_database()
     try:
-        result   = db[ASSETS_COL].insert_one(asset_doc)
+        result   = await db[ASSETS_COL].insert_one(asset_doc)
         asset_id = str(result.inserted_id)
     except Exception as exc:
         logger.exception("DB insert failed — user=%s: %s", user_id, exc)
@@ -195,7 +179,7 @@ async def upload_asset(
     # ── Create fingerprint record (status='pending') ──────────────────────────
     fingerprint_id: str | None = None
     try:
-        fingerprint_id = create_fingerprint_record(
+        fingerprint_id = await create_fingerprint_record(
             asset_id=asset_id, user_id=user_id, fingerprint_type=file_type
         )
     except Exception as exc:
@@ -204,7 +188,7 @@ async def upload_asset(
     # ── Create watermark record (status='pending') ────────────────────────────
     watermark_id: str | None = None
     try:
-        watermark_id = create_watermark_record(
+        watermark_id = await create_watermark_record(
             asset_id=asset_id, user_id=user_id, file_type=file_type
         )
     except Exception as exc:
@@ -217,12 +201,14 @@ async def upload_asset(
     if watermark_id:
         update_fields["watermark_id"] = watermark_id
     if update_fields:
-        db[ASSETS_COL].update_one({"_id": result.inserted_id}, {"$set": update_fields})
+        await db[ASSETS_COL].update_one({"_id": result.inserted_id}, {"$set": update_fields})
 
-    # ── Queue background tasks ────────────────────────────────────────────────
+    # ── Queue background tasks (production TaskQueue) ─────────────────────────
     if fingerprint_id:
-        background_tasks.add_task(
+        task_queue.enqueue(
             process_fingerprint,
+            task_name=f"fingerprint:{asset_id}",
+            max_retries=2,
             fingerprint_id=fingerprint_id,
             asset_id=asset_id,
             file_path=file_path,
@@ -230,8 +216,10 @@ async def upload_asset(
         )
 
     if watermark_id:
-        background_tasks.add_task(
+        task_queue.enqueue(
             process_watermark,
+            task_name=f"watermark:{asset_id}",
+            max_retries=2,
             watermark_doc_id=watermark_id,
             asset_id=asset_id,
             user_id=user_id,
@@ -276,7 +264,7 @@ async def upload_asset(
         "for similarity search."
     ),
 )
-def get_fingerprint_status(
+async def get_fingerprint_status(
     asset_id: str,
     current_user: Annotated[dict, Depends(get_current_user)],
 ) -> FingerprintStatusResponse:
@@ -284,9 +272,9 @@ def get_fingerprint_status(
     _require_valid_oid(asset_id)
 
     db    = get_database()
-    asset = _fetch_and_own(db, ASSETS_COL, asset_id, user_id)
+    await _fetch_and_own(db, ASSETS_COL, asset_id, user_id)
 
-    fp_doc = db[FINGERPRINTS_COL].find_one(
+    fp_doc = await db[FINGERPRINTS_COL].find_one(
         {"asset_id": asset_id}, sort=[("created_at", -1)]
     )
     if fp_doc is None:
@@ -312,7 +300,7 @@ def get_fingerprint_status(
 
 
 # ---------------------------------------------------------------------------
-# GET /assets/{asset_id}/watermark-status  (Phase 5)
+# GET /assets/{asset_id}/watermark-status
 # ---------------------------------------------------------------------------
 
 @router.get(
@@ -331,7 +319,7 @@ def get_fingerprint_status(
         404: {"description": "Asset or watermark record not found"},
     },
 )
-def get_watermark_status(
+async def get_watermark_status(
     asset_id: str,
     current_user: Annotated[dict, Depends(get_current_user)],
 ) -> WatermarkStatusResponse:
@@ -339,9 +327,9 @@ def get_watermark_status(
     _require_valid_oid(asset_id)
 
     db = get_database()
-    _fetch_and_own(db, ASSETS_COL, asset_id, user_id)  # ownership + existence check
+    await _fetch_and_own(db, ASSETS_COL, asset_id, user_id)  # ownership + existence check
 
-    wm_doc = db[WATERMARKS_COL].find_one(
+    wm_doc = await db[WATERMARKS_COL].find_one(
         {"asset_id": asset_id}, sort=[("created_at", -1)]
     )
     if wm_doc is None:
@@ -382,7 +370,7 @@ def get_watermark_status(
     status_code=status.HTTP_200_OK,
     summary="List all assets owned by the current user",
 )
-def list_assets(
+async def list_assets(
     current_user: Annotated[dict, Depends(get_current_user)],
     skip:  int = Query(default=0,  ge=0,        description="Records to skip."),
     limit: int = Query(default=20, ge=1, le=100, description="Max records per page."),
@@ -392,12 +380,13 @@ def list_assets(
     col     = db[ASSETS_COL]
 
     filt   = {"user_id": user_id}
-    total  = col.count_documents(filt)
+    total  = await col.count_documents(filt)
     cursor = col.find(filt).sort("created_at", -1).skip(skip).limit(limit)
+    docs   = await cursor.to_list(length=limit)
 
     return AssetListResponse(
         total  = total,
-        assets = [_doc_to_asset_item(doc) for doc in cursor],
+        assets = [_doc_to_asset_item(doc) for doc in docs],
     )
 
 
@@ -416,14 +405,14 @@ def list_assets(
         404: {"description": "Asset not found"},
     },
 )
-def get_asset(
+async def get_asset(
     asset_id: str,
     current_user: Annotated[dict, Depends(get_current_user)],
 ) -> AssetItem:
     user_id = str(current_user["_id"])
     _require_valid_oid(asset_id)
     db  = get_database()
-    doc = _fetch_and_own(db, ASSETS_COL, asset_id, user_id)
+    doc = await _fetch_and_own(db, ASSETS_COL, asset_id, user_id)
     return _doc_to_asset_item(doc)
 
 
@@ -441,8 +430,8 @@ def _require_valid_oid(asset_id: str) -> None:
         )
 
 
-def _fetch_and_own(db, collection: str, asset_id: str, user_id: str) -> dict:
-    doc = db[collection].find_one({"_id": ObjectId(asset_id)})
+async def _fetch_and_own(db, collection: str, asset_id: str, user_id: str) -> dict:
+    doc = await db[collection].find_one({"_id": ObjectId(asset_id)})
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found.")
     if doc["user_id"] != user_id:

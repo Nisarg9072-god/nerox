@@ -1,20 +1,21 @@
 """
 app/services/fingerprint_service.py
 =====================================
-Orchestration layer for the Phase 4 AI fingerprinting pipeline.
+Phase 2 Enterprise Upgrade: Async record creation + sync thread-pool pipeline.
 
 High-level flow
 ---------------
-  Synchronous (before HTTP response):
+  Async (before HTTP response):
     create_fingerprint_record(asset_id, user_id, fingerprint_type)
       → Inserts a fingerprints-collection document with status='pending'
       → Returns fingerprint_id (string)
 
-  Asynchronous (BackgroundTask, after HTTP response):
+  Background (TaskQueue, after HTTP response):
     process_fingerprint(fingerprint_id, asset_id, file_path, file_type)
+      → Uses sync PyMongo (runs in thread pool via TaskQueue)
       → Updates both fingerprints and assets documents to 'processing'
       → Extracts frames via ImageProcessor or VideoProcessor
-      → Generates embedding via EmbeddingService (thread-pool)
+      → Generates embedding via EmbeddingService
       → Stores embedding in fingerprints document → marks 'completed'
       → Updates assets document (fingerprint, status, processed_at)
       → Appends vector to live FAISS index
@@ -23,24 +24,10 @@ High-level flow
     generate_embedding_for_detection(file_path, file_type)
       → Extracts frames + generates embedding (no DB writes)
       → Returns List[float] ready for FAISS search
-
-Error handling
---------------
-  Any exception during process_fingerprint:
-    - fingerprints.processing_status  → 'failed'
-    - fingerprints.error_message      → str(exc)
-    - assets.status                   → 'failed'
-    - No crash, no silent swallo — always logged at ERROR level.
-
-Import safety
--------------
-  audio/video/torch imports happen lazily inside the functions that need them.
-  Module-level imports are limited to stdlib + app.core to prevent circular deps.
 """
 
 from __future__ import annotations
 
-import asyncio
 import time
 from datetime import datetime, timezone
 from typing import List
@@ -49,7 +36,7 @@ import numpy as np
 from bson import ObjectId
 
 from app.core.logger import get_logger
-from app.db.mongodb import get_database
+from app.db.mongodb import get_database, get_sync_database
 from app.services.embedding_service import (
     EMBEDDING_DIM,
     MODEL_IDENTIFIER,
@@ -60,47 +47,28 @@ from app.services.video_processor import get_video_processor
 
 logger = get_logger(__name__)
 
-# ---------------------------------------------------------------------------
-# Collection names
-# ---------------------------------------------------------------------------
-
 FINGERPRINTS_COL = "fingerprints"
 ASSETS_COL       = "assets"
 
-
-# ---------------------------------------------------------------------------
-# Custom exception
-# ---------------------------------------------------------------------------
 
 class FingerprintPipelineError(Exception):
     """Raised when the fingerprinting pipeline encounters a non-recoverable error."""
 
 
 # ---------------------------------------------------------------------------
-# Synchronous: create pending fingerprint record before HTTP response
+# Async: create pending fingerprint record before HTTP response
 # ---------------------------------------------------------------------------
 
-def create_fingerprint_record(
+async def create_fingerprint_record(
     asset_id:         str,
     user_id:          str,
     fingerprint_type: str,
 ) -> str:
     """
-    Insert a fingerprint document with status='pending' into MongoDB.
+    Insert a fingerprint document with status='pending' into MongoDB (async).
 
-    Called synchronously inside the upload endpoint — before the HTTP response
-    is sent — so clients can immediately poll /fingerprint-status.
-
-    Args:
-        asset_id:         MongoDB ObjectId string of the parent asset.
-        user_id:          MongoDB ObjectId string of the owning user.
-        fingerprint_type: 'image' | 'video'
-
-    Returns:
-        fingerprint_id as a string (MongoDB ObjectId).
-
-    Raises:
-        Any PyMongo exception propagates to the upload endpoint for 500 handling.
+    Called from the upload endpoint — before the HTTP response is sent —
+    so clients can immediately poll /fingerprint-status.
     """
     db = get_database()
 
@@ -119,7 +87,7 @@ def create_fingerprint_record(
         "processing_duration_ms": None,
     }
 
-    result         = db[FINGERPRINTS_COL].insert_one(doc)
+    result         = await db[FINGERPRINTS_COL].insert_one(doc)
     fingerprint_id = str(result.inserted_id)
 
     logger.info(
@@ -130,40 +98,30 @@ def create_fingerprint_record(
 
 
 # ---------------------------------------------------------------------------
-# Asynchronous: full pipeline (runs in BackgroundTask after HTTP response)
+# Background: full pipeline (runs in TaskQueue — sync DB in thread pool)
 # ---------------------------------------------------------------------------
 
-async def process_fingerprint(
+def process_fingerprint(
     fingerprint_id: str,
     asset_id:       str,
     file_path:      str,
     file_type:      str,
 ) -> None:
     """
-    Background coroutine: execute the full AI fingerprinting pipeline.
+    Synchronous fingerprinting pipeline — designed to run inside TaskQueue's
+    thread pool. Uses sync PyMongo client.
 
     Workflow:
-      1.  Mark fingerprint record → 'processing'
-      2.  Mark asset → 'processing'
-      3.  Extract frames (image=1 frame, video=N keyframes) in thread pool
-      4.  Generate embedding via EmbeddingService in thread pool
+      1. Mark fingerprint record → 'processing'
+      2. Mark asset → 'processing'
+      3. Extract frames (image=1, video=N keyframes)
+      4. Generate embedding via EmbeddingService
       5a. Persist embedding + mark fingerprint → 'completed'
-      5b. Update asset (fingerprint, status, processed_at, fingerprint_id)
-      6.  Append vector to live FAISS index (non-fatal if fails)
-
-    On any exception:
-      - fingerprints.processing_status → 'failed'
-      - fingerprints.error_message     → error string
-      - assets.status                  → 'failed'
-
-    Args:
-        fingerprint_id: MongoDB ObjectId string of the fingerprint record.
-        asset_id:       MongoDB ObjectId string of the parent asset.
-        file_path:      Absolute path to the stored file on disk.
-        file_type:      'image' | 'video'
+      5b. Update asset (fingerprint, status, processed_at)
+      6. Append vector to live FAISS index (non-fatal)
     """
     t_start = time.perf_counter()
-    db      = get_database()
+    db      = get_sync_database()
     fp_oid  = ObjectId(fingerprint_id)
     a_oid   = ObjectId(asset_id)
 
@@ -183,22 +141,20 @@ async def process_fingerprint(
     )
 
     try:
-        # ── Step 3: Frame extraction (CPU-bound → thread pool) ────────────
-        frames: List[np.ndarray] = await asyncio.to_thread(
-            _extract_frames, file_path, file_type
-        )
+        # ── Step 3: Frame extraction ──────────────────────────────────────
+        frames: List[np.ndarray] = _extract_frames(file_path, file_type)
         frame_count = len(frames)
         logger.info(
             "Frame extraction complete — %d frames for asset=%s",
             frame_count, asset_id,
         )
 
-        # ── Step 4: Embedding generation (CPU-bound → thread pool) ────────
+        # ── Step 4: Embedding generation ──────────────────────────────────
         svc = get_embedding_service()
         if frame_count == 1:
-            vec: np.ndarray = await asyncio.to_thread(svc.embed_frame, frames[0])
+            vec: np.ndarray = svc.embed_frame(frames[0])
         else:
-            vec = await asyncio.to_thread(svc.embed_frames, frames)
+            vec = svc.embed_frames(frames)
 
         embedding_list = vec.tolist()
         elapsed_ms     = (time.perf_counter() - t_start) * 1_000
@@ -243,7 +199,6 @@ async def process_fingerprint(
             get_vector_index().add_vector(asset_id, embedding_list)
             logger.debug("FAISS index updated — asset=%s", asset_id)
         except Exception as faiss_exc:
-            # FAISS update failure is non-fatal; index rebuilds from DB on restart
             logger.warning(
                 "FAISS update failed for asset=%s (non-fatal): %s",
                 asset_id, faiss_exc,
@@ -279,6 +234,7 @@ async def process_fingerprint(
                 "Failed to persist failure state for fingerprint_id=%s: %s",
                 fingerprint_id, db_exc,
             )
+        raise  # Re-raise so TaskQueue can handle retry
 
 
 # ---------------------------------------------------------------------------
@@ -294,17 +250,6 @@ def generate_embedding_for_detection(
 
     Used by POST /detect when a raw file is uploaded for similarity search.
     The file is a temporary file that the caller is responsible for deleting.
-
-    Args:
-        file_path: Absolute path to the temporary file on disk.
-        file_type: 'image' | 'video'
-
-    Returns:
-        2048-d embedding as a Python list of floats.
-
-    Raises:
-        ValueError:   On unreadable file or unsupported file_type.
-        RuntimeError: If torch/torchvision are not installed.
     """
     frames = _extract_frames(file_path, file_type)
     svc    = get_embedding_service()
@@ -318,24 +263,11 @@ def generate_embedding_for_detection(
 
 
 # ---------------------------------------------------------------------------
-# Private helpers — run in thread pool via asyncio.to_thread
+# Private helpers
 # ---------------------------------------------------------------------------
 
 def _extract_frames(file_path: str, file_type: str) -> List[np.ndarray]:
-    """
-    Dispatch to the correct processor based on file_type.
-
-    Args:
-        file_path: Path to the file on disk.
-        file_type: 'image' | 'video'
-
-    Returns:
-        List of (224, 224, 3) RGB uint8 numpy arrays.
-
-    Raises:
-        FingerprintPipelineError: On unknown file_type.
-        ValueError: On unreadable / empty file.
-    """
+    """Dispatch to the correct processor based on file_type."""
     if file_type == "image":
         frame = get_image_processor().preprocess(file_path)
         return [frame]

@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from app.core.logger import get_logger
-from app.db.mongodb import get_database
+from app.db.mongodb import get_sync_database as get_database
 from app.schemas.detection_schema import DetectionItem
 from app.services.risk_engine import (
     calculate_risk_score,
