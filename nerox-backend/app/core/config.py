@@ -23,10 +23,11 @@ Environment variables (all loaded from .env)
 """
 
 import os
+import secrets
 from functools import lru_cache
 
 from dotenv import load_dotenv
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 # Load .env **before** the Settings class is instantiated so that
@@ -42,13 +43,15 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # MongoDB
     # ------------------------------------------------------------------
-    MONGO_URI: str
+    MONGO_URI: str = ""
+    MONGO_URL: str = ""
     DB_NAME: str
 
     # ------------------------------------------------------------------
     # JWT
     # ------------------------------------------------------------------
-    SECRET_KEY: str
+    SECRET_KEY: str = ""
+    JWT_SECRET: str = ""
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -62,6 +65,7 @@ class Settings(BaseSettings):
     # Storage
     # ------------------------------------------------------------------
     STORAGE_TYPE: str = "local"       # 'local' | 's3'
+    STORAGE_MODE: str = "local"       # 'local' | 's3' | 'hybrid'
     MAX_FILE_SIZE_MB: int = 50        # Maximum upload size in megabytes
     BASE_URL: str = "http://localhost:8000"  # Public base URL (for file URLs)
 
@@ -104,18 +108,82 @@ class Settings(BaseSettings):
     S3_REGION: str = "us-east-1"
     S3_ENDPOINT_URL: str = ""
     S3_PUBLIC_BASE_URL: str = ""
+    AWS_ACCESS_KEY: str = ""
+    AWS_SECRET_KEY: str = ""
+
+    # Billing
+    ENABLE_BILLING: bool = False
+    STRIPE_SECRET_KEY: str = ""
+    STRIPE_WEBHOOK_SECRET: str = ""
+    STRIPE_PRICE_PRO: str = ""
+    STRIPE_PRICE_ENTERPRISE: str = ""
+    STRIPE_PRICE_PRO_MONTHLY: str = ""
+    STRIPE_PRICE_ENTERPRISE_MONTHLY: str = ""
+    STRIPE_SUCCESS_URL: str = "http://localhost:5173/dashboard/settings?billing=success"
+    STRIPE_CANCEL_URL: str = "http://localhost:5173/dashboard/settings?billing=cancel"
+
+    # Email
+    ENABLE_EMAIL: bool = False
+    EMAIL_PROVIDER: str = "smtp"  # smtp | sendgrid
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = "no-reply@nerox.local"
+    SENDGRID_API_KEY: str = ""
+    SENDGRID_FROM_EMAIL: str = "no-reply@nerox.local"
+
+    # Security hardening
+    ENFORCE_CSRF: bool = False
+    CSRF_HEADER_NAME: str = "X-CSRF-Token"
+    CSRF_SECRET: str = ""
 
     # ------------------------------------------------------------------
     # Validators
     # ------------------------------------------------------------------
 
+    @model_validator(mode="after")
+    def normalize_aliases(self):
+        # Env alias support for runtime compatibility.
+        if not self.MONGO_URI and self.MONGO_URL:
+            self.MONGO_URI = self.MONGO_URL
+        if not self.SECRET_KEY and self.JWT_SECRET:
+            self.SECRET_KEY = self.JWT_SECRET
+        if not self.STORAGE_MODE:
+            self.STORAGE_MODE = "local"
+        if not self.STRIPE_PRICE_PRO_MONTHLY and self.STRIPE_PRICE_PRO:
+            self.STRIPE_PRICE_PRO_MONTHLY = self.STRIPE_PRICE_PRO
+        if not self.STRIPE_PRICE_ENTERPRISE_MONTHLY and self.STRIPE_PRICE_ENTERPRISE:
+            self.STRIPE_PRICE_ENTERPRISE_MONTHLY = self.STRIPE_PRICE_ENTERPRISE
+        return self
+
     @field_validator("SECRET_KEY")
     @classmethod
     def secret_key_must_be_strong(cls, v: str) -> str:
+        if not v:
+            if os.getenv("ENVIRONMENT", "development").lower() == "development":
+                return "dev-insecure-secret-key-please-change-32-chars"
+            raise ValueError("SECRET_KEY/JWT_SECRET is required.")
         if len(v) < 32:
             raise ValueError(
                 "SECRET_KEY must be at least 32 characters long for security."
             )
+        return v
+
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def secret_key_not_defaultish(cls, v: str) -> str:
+        lv = v.lower()
+        weak_markers = ("changeme", "secret", "password", "default", "test")
+        if any(marker in lv for marker in weak_markers):
+            raise ValueError("SECRET_KEY appears weak. Use a random high-entropy value.")
+        return v
+
+    @field_validator("CSRF_SECRET")
+    @classmethod
+    def csrf_secret_default(cls, v: str) -> str:
+        if not v:
+            return secrets.token_urlsafe(32)
         return v
 
     @field_validator("ACCESS_TOKEN_EXPIRE_MINUTES")
@@ -138,7 +206,14 @@ def get_settings() -> Settings:
     Using lru_cache ensures .env is parsed only once per process lifetime,
     which is important for performance in high-traffic environments.
     """
-    return Settings()
+    cfg = Settings()
+    # Warn (instead of crash) on missing env in development.
+    if cfg.ENVIRONMENT.lower() == "development":
+        if not cfg.MONGO_URI:
+            print("WARNING: Missing MONGO_URI/MONGO_URL in development environment.")
+        if not cfg.SECRET_KEY:
+            print("WARNING: Missing SECRET_KEY/JWT_SECRET in development environment.")
+    return cfg
 
 
 # Convenient module-level alias used throughout the application.

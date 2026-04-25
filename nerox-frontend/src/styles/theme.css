@@ -120,33 +120,65 @@
 }
 
 @layer base {
-  * {
+  /* ── Global box model ───────────────────────────────────── */
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
     @apply border-border outline-ring/50;
+  }
+
+  /* Prevent horizontal overflow on the page level */
+  html {
+    font-size: var(--font-size);
+    overflow-x: hidden;
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
   }
 
   body {
     @apply bg-background text-foreground;
+    overflow-x: hidden;
+    min-height: 100dvh;
+  }
+
+  /* Flex/grid children default to min-width:0 to prevent overflow */
+  .flex > *,
+  .grid > * {
+    min-width: 0;
+  }
+
+  /* Images & media: always constrained */
+  img,
+  video,
+  svg,
+  canvas {
+    max-width: 100%;
+    height: auto;
+    display: block;
+  }
+
+  /* Better touch targets on mobile */
+  a,
+  button,
+  [role="button"] {
+    touch-action: manipulation;
   }
 
   /**
   * Default typography styles for HTML elements (h1-h4, p, label, button, input).
   * These are in @layer base, so Tailwind utility classes (like text-sm, text-lg) automatically override them.
   */
-
-  html {
-    font-size: var(--font-size);
-  }
-
   h1 {
     font-size: var(--text-2xl);
     font-weight: var(--font-weight-medium);
-    line-height: 1.5;
+    line-height: 1.3;
   }
 
   h2 {
     font-size: var(--text-xl);
     font-weight: var(--font-weight-medium);
-    line-height: 1.5;
+    line-height: 1.4;
   }
 
   h3 {
@@ -179,3 +211,37 @@
     line-height: 1.5;
   }
 }
+
+/* ── Responsive utility layer ───────────────────────────────── */
+@layer utilities {
+  /* Horizontally scrollable container (for tables on mobile) */
+  .scroll-x {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Prevent long words/URLs from breaking layout */
+  .break-anywhere {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  /* Safe area padding for notched phones */
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  /* Visually hidden but accessible */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
+}
+

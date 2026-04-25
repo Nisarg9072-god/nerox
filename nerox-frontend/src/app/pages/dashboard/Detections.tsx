@@ -69,20 +69,20 @@ export default function Detections() {
   );
 
   return (
-    <div className="p-6 md:p-8 space-y-8">
-      <div className="flex items-center justify-between">
+    <div className="p-4 sm:p-6 md:p-8 space-y-6 md:space-y-8">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold mb-2">Detection Tracking</h1>
-          <p className="text-muted-foreground">Monitor unauthorized usage of your protected assets</p>
+          <h1 className="text-2xl sm:text-3xl font-bold mb-1">Detection Tracking</h1>
+          <p className="text-sm sm:text-base text-muted-foreground">Monitor unauthorized usage of your protected assets</p>
         </div>
-        <Button variant="outline" onClick={load} disabled={loading}>
+        <Button variant="outline" onClick={load} disabled={loading} className="self-start sm:self-auto shrink-0">
           <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
           Refresh
         </Button>
       </div>
 
       {/* KPI cards */}
-      <div className="grid lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6">
         {[
           { label: 'Total Detections', value: rs?.total_detections ?? '—', class: '' },
           { label: 'Critical Alerts',  value: rs?.critical_alerts  ?? '—', class: 'text-destructive' },
@@ -213,17 +213,17 @@ export default function Detections() {
                       </div>
                     </div>
 
-                    <div className="flex flex-col md:flex-row items-start md:items-center gap-6">
-                      <div className="w-full md:w-36">
-                        <div className="text-sm text-muted-foreground mb-2">Risk Score</div>
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-6">
+                      <div className="w-full sm:w-36">
+                        <div className="text-sm text-muted-foreground mb-1">Risk Score</div>
                         <Progress
                           value={d.risk_score}
                           className="h-2"
                         />
                         <div className="text-xs text-muted-foreground mt-1">{d.risk_score}/100</div>
                       </div>
-                      <div className="w-full md:w-32">
-                        <div className="text-sm text-muted-foreground mb-2">Similarity</div>
+                      <div className="w-full sm:w-32">
+                        <div className="text-sm text-muted-foreground mb-1">Similarity</div>
                         <Progress
                           value={Math.round(d.similarity_score * 100)}
                           className="h-2"

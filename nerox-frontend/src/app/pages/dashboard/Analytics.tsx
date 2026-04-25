@@ -64,14 +64,14 @@ export default function Analytics() {
   const attackedAssets = insights?.top_attacked_assets ?? [];
 
   return (
-    <div className="p-6 md:p-8 space-y-8">
+    <div className="p-4 sm:p-6 md:p-8 space-y-6 md:space-y-8">
       <div>
-        <h1 className="text-3xl font-bold mb-2">Analytics</h1>
-        <p className="text-muted-foreground">Comprehensive insights into asset protection and piracy trends</p>
+        <h1 className="text-2xl sm:text-3xl font-bold mb-1">Analytics</h1>
+        <p className="text-sm sm:text-base text-muted-foreground">Comprehensive insights into asset protection and piracy trends</p>
       </div>
 
       {/* Overview KPIs */}
-      <div className="grid md:grid-cols-4 gap-6">
+      <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {loading ? (
           Array.from({ length: 4 }).map((_, i) => (
             <Card key={i}><CardContent className="p-6"><Skeleton h={60} /></CardContent></Card>
@@ -117,7 +117,7 @@ export default function Analytics() {
         )}
       </div>
 
-      <div className="grid lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
         {/* Detection timeline */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
           <Card>
@@ -126,14 +126,14 @@ export default function Analytics() {
               <CardDescription>Last 30 days</CardDescription>
             </CardHeader>
             <CardContent>
-              {loading ? <Skeleton /> : timelineData.length === 0 ? (
-                <div className="h-[300px] flex items-center justify-center text-muted-foreground">No detections yet</div>
+              {loading ? <Skeleton h={220} /> : timelineData.length === 0 ? (
+                <div className="h-[220px] flex items-center justify-center text-muted-foreground">No detections yet</div>
               ) : (
-                <ResponsiveContainer width="100%" height={300}>
+                <ResponsiveContainer width="100%" height={220}>
                   <LineChart data={timelineData}>
                     <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
-                    <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                    <YAxis />
+                    <XAxis dataKey="date" tick={{ fontSize: 10 }} />
+                    <YAxis tick={{ fontSize: 10 }} width={32} />
                     <Tooltip />
                     <Line type="monotone" dataKey="count" stroke="hsl(var(--destructive))" strokeWidth={2} name="Detections" />
                   </LineChart>
@@ -150,14 +150,14 @@ export default function Analytics() {
               <CardDescription>Real detection-insights daily counts</CardDescription>
             </CardHeader>
             <CardContent>
-              {loading ? <Skeleton /> : insightTrend.length === 0 ? (
-                <div className="h-[300px] flex items-center justify-center text-muted-foreground">No insights yet</div>
+              {loading ? <Skeleton h={220} /> : insightTrend.length === 0 ? (
+                <div className="h-[220px] flex items-center justify-center text-muted-foreground">No insights yet</div>
               ) : (
-                <ResponsiveContainer width="100%" height={300}>
+                <ResponsiveContainer width="100%" height={220}>
                   <LineChart data={insightTrend}>
                     <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
-                    <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                    <YAxis />
+                    <XAxis dataKey="date" tick={{ fontSize: 10 }} />
+                    <YAxis tick={{ fontSize: 10 }} width={32} />
                     <Tooltip />
                     <Legend />
                     <Line type="monotone" dataKey="count" stroke="hsl(var(--primary))" strokeWidth={2} name="Daily detections" />
@@ -176,10 +176,10 @@ export default function Analytics() {
               <CardDescription>Where content is detected</CardDescription>
             </CardHeader>
             <CardContent className="flex items-center justify-center">
-              {loading ? <Skeleton /> : pieData.length === 0 ? (
-                <div className="h-[300px] flex items-center justify-center text-muted-foreground">No platform data</div>
+              {loading ? <Skeleton h={220} /> : pieData.length === 0 ? (
+                <div className="h-[220px] flex items-center justify-center text-muted-foreground">No platform data</div>
               ) : (
-                <ResponsiveContainer width="100%" height={300}>
+                <ResponsiveContainer width="100%" height={220}>
                   <PieChart>
                     <Pie
                       data={pieData}
@@ -187,7 +187,7 @@ export default function Analytics() {
                       cy="50%"
                       labelLine={false}
                       label={(e) => `${e.name} (${e.value})`}
-                      outerRadius={100}
+                      outerRadius={80}
                       dataKey="value"
                     >
                       {pieData.map((entry, index) => (
@@ -217,17 +217,17 @@ export default function Analytics() {
               ) : (
                 <div className="space-y-4">
                   {attackedAssets.slice(0, 5).map((asset) => (
-                    <div key={asset.asset_id} className="flex items-center justify-between">
-                      <div className="flex-1 pr-4">
-                        <div className="font-medium mb-1 truncate">{asset.filename}</div>
-                        <div className="flex gap-2 text-xs text-muted-foreground mb-1">
+                    <div key={asset.asset_id} className="flex items-center justify-between gap-4">
+                      <div className="flex-1 min-w-0 pr-2">
+                        <div className="font-medium mb-1 truncate text-sm sm:text-base">{asset.filename}</div>
+                        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground mb-1">
                           <span>Risk {asset.max_risk}/100</span>
                           <span>•</span>
-                          <span className="capitalize">{asset.platforms.slice(0, 3).join(', ')}</span>
+                          <span className="capitalize truncate">{asset.platforms.slice(0, 3).join(', ')}</span>
                         </div>
-                        <div className="w-full bg-muted rounded-full h-2">
+                        <div className="w-full bg-muted rounded-full h-1.5">
                           <div
-                            className={`h-2 rounded-full ${
+                            className={`h-1.5 rounded-full ${
                               asset.max_risk >= 76 ? 'bg-destructive' :
                               asset.max_risk >= 51 ? 'bg-orange-500' :
                               'bg-primary'
@@ -236,7 +236,7 @@ export default function Analytics() {
                           />
                         </div>
                       </div>
-                      <div className="ml-4 text-2xl font-bold text-muted-foreground">
+                      <div className="text-xl sm:text-2xl font-bold text-muted-foreground shrink-0">
                         {asset.detection_count}
                       </div>
                     </div>

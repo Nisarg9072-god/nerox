@@ -27,10 +27,12 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from bson import ObjectId
 
 from app.core.logger import get_logger
 from app.db.mongodb import get_sync_database as get_database
 from app.services.risk_engine import PLATFORM_SEVERITY
+from app.services.saas_service import get_plan_limits
 
 logger = get_logger(__name__)
 
@@ -77,6 +79,19 @@ def get_dashboard(user_id: str) -> Dict[str, Any]:
         {"user_id": user_id, "watermark_verified": True}
     )
     detection_rate   = round(total_detections / total_assets, 2) if total_assets > 0 else 0.0
+    scans_used = 0
+    scans_limit = None
+    uploads_used = 0
+    uploads_limit = None
+    owner = db["users"].find_one({"_id": ObjectId(user_id)})
+    if owner and owner.get("organization_id"):
+        org = db["organizations"].find_one({"_id": ObjectId(owner["organization_id"])})
+        usage = db["usage"].find_one({"organization_id": owner["organization_id"]}) or {}
+        limits = get_plan_limits((org or {}).get("plan", "free"))
+        scans_used = int(usage.get("scans_used", 0))
+        uploads_used = int(usage.get("uploads_used", 0))
+        scans_limit = limits.get("scans")
+        uploads_limit = limits.get("uploads")
 
     overview = {
         "total_assets":            total_assets,
@@ -85,6 +100,10 @@ def get_dashboard(user_id: str) -> Dict[str, Any]:
         "critical_alerts":         critical_alerts,
         "watermark_verifications": wm_verifications,
         "detection_rate":          detection_rate,
+        "scans_used":              scans_used,
+        "scans_limit":             scans_limit,
+        "uploads_used":            uploads_used,
+        "uploads_limit":           uploads_limit,
     }
 
     # ── Risk summary ──────────────────────────────────────────────────────────

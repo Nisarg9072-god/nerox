@@ -8,6 +8,8 @@ import { useAuth } from '../../../context/AuthContext';
 import { useState, useEffect } from 'react';
 import { authService } from '../../../services/authService';
 import { toast } from 'sonner';
+import { saasService, type UsageResponse } from '../../../services/saasService';
+import { billingService } from '../../../services/billingService';
 
 export default function Settings() {
   const { user, refreshUser } = useAuth();
@@ -30,6 +32,8 @@ export default function Settings() {
   const [criticalAlerts, setCriticalAlerts] = useState(true);
   const [weeklyReports, setWeeklyReports] = useState(true);
   const [autoTakedown, setAutoTakedown] = useState(false);
+  const [usage, setUsage] = useState<UsageResponse | null>(null);
+  const [billingLoading, setBillingLoading] = useState(false);
 
   // Load profile data on mount
   useEffect(() => {
@@ -39,6 +43,12 @@ export default function Settings() {
         setProfileName(profile.name || '');
         setProfileCompany(profile.company_name || '');
         setProfileEmail(profile.email || '');
+        try {
+          const usageData = await saasService.getUsage();
+          setUsage(usageData);
+        } catch {
+          setUsage(null);
+        }
       } catch {
         // Fallback to context data
         setProfileName(user?.name || user?.companyName || '');
@@ -68,6 +78,19 @@ export default function Settings() {
       toast.error(msg);
     } finally {
       setProfileLoading(false);
+    }
+  };
+
+  const handleUpgradeToPro = async () => {
+    setBillingLoading(true);
+    try {
+      const session = await billingService.createCheckout('pro');
+      window.location.href = session.checkout_url;
+    } catch (err: any) {
+      const msg = err?.response?.data?.error || err?.response?.data?.detail || 'Unable to start checkout';
+      toast.error(msg);
+    } finally {
+      setBillingLoading(false);
     }
   };
 
@@ -105,13 +128,13 @@ export default function Settings() {
   };
 
   return (
-    <div className="p-6 md:p-8 space-y-8">
+    <div className="p-4 sm:p-6 md:p-8 space-y-6 md:space-y-8">
       <div>
-        <h1 className="text-3xl font-bold mb-2">Settings</h1>
-        <p className="text-muted-foreground">Manage your account and preferences</p>
+        <h1 className="text-2xl sm:text-3xl font-bold mb-1">Settings</h1>
+        <p className="text-sm sm:text-base text-muted-foreground">Manage your account and preferences</p>
       </div>
 
-      <div className="grid gap-6 max-w-4xl">
+      <div className="grid gap-4 sm:gap-6 w-full max-w-4xl">
         {/* ── Company Profile ───────────────────────────────────────────── */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -163,6 +186,7 @@ export default function Settings() {
                 id="settings-save-profile"
                 onClick={handleProfileSave}
                 disabled={profileLoading}
+                className="w-full sm:w-auto"
               >
                 {profileLoading ? (
                   <><Loader2 className="h-4 w-4 animate-spin mr-2" /> Saving...</>
@@ -171,6 +195,35 @@ export default function Settings() {
                 ) : (
                   'Save Changes'
                 )}
+              </Button>
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        {/* ── Notification Preferences ──────────────────────────────────── */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
+          <Card>
+            <CardHeader>
+              <CardTitle>Plan & Usage</CardTitle>
+              <CardDescription>Current subscription and monthly usage</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="text-sm">
+                Current Plan: <span className="font-semibold uppercase">{usage?.plan || 'free'}</span>
+              </div>
+              <div className="text-sm text-muted-foreground">
+                Scans: {usage?.scans_used ?? 0} / {usage?.scans_limit ?? 'Unlimited'}
+              </div>
+              <div className="text-sm text-muted-foreground">
+                Uploads: {usage?.uploads_used ?? 0} / {usage?.uploads_limit ?? 'Unlimited'}
+              </div>
+              <div className="grid gap-2 text-sm text-muted-foreground">
+                <div>Free: 50 scans / 100 uploads</div>
+                <div>Pro: 1000 scans / 5000 uploads</div>
+                <div>Enterprise: custom</div>
+              </div>
+              <Button variant="outline" id="settings-upgrade-plan" onClick={handleUpgradeToPro} disabled={billingLoading}>
+                {billingLoading ? 'Redirecting to Stripe...' : 'Upgrade to Pro'}
               </Button>
             </CardContent>
           </Card>
@@ -195,33 +248,33 @@ export default function Settings() {
               </div>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-medium">Email Notifications</div>
-                  <div className="text-sm text-muted-foreground">Receive updates via email</div>
+              <div className="flex items-start sm:items-center justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-sm sm:text-base">Email Notifications</div>
+                  <div className="text-xs sm:text-sm text-muted-foreground">Receive updates via email</div>
                 </div>
-                <Switch checked={emailNotifications} onCheckedChange={setEmailNotifications} />
+                <Switch checked={emailNotifications} onCheckedChange={setEmailNotifications} className="shrink-0" />
               </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-medium">Critical Alerts</div>
-                  <div className="text-sm text-muted-foreground">Immediate notifications for high-risk detections</div>
+              <div className="flex items-start sm:items-center justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-sm sm:text-base">Critical Alerts</div>
+                  <div className="text-xs sm:text-sm text-muted-foreground">Immediate notifications for high-risk detections</div>
                 </div>
-                <Switch checked={criticalAlerts} onCheckedChange={setCriticalAlerts} />
+                <Switch checked={criticalAlerts} onCheckedChange={setCriticalAlerts} className="shrink-0" />
               </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-medium">Weekly Reports</div>
-                  <div className="text-sm text-muted-foreground">Summary of protection activity</div>
+              <div className="flex items-start sm:items-center justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-sm sm:text-base">Weekly Reports</div>
+                  <div className="text-xs sm:text-sm text-muted-foreground">Summary of protection activity</div>
                 </div>
-                <Switch checked={weeklyReports} onCheckedChange={setWeeklyReports} />
+                <Switch checked={weeklyReports} onCheckedChange={setWeeklyReports} className="shrink-0" />
               </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-medium">Detection Updates</div>
-                  <div className="text-sm text-muted-foreground">Get notified of new detections</div>
+              <div className="flex items-start sm:items-center justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-sm sm:text-base">Detection Updates</div>
+                  <div className="text-xs sm:text-sm text-muted-foreground">Get notified of new detections</div>
                 </div>
-                <Switch defaultChecked />
+                <Switch defaultChecked className="shrink-0" />
               </div>
             </CardContent>
           </Card>
@@ -246,33 +299,33 @@ export default function Settings() {
               </div>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-medium">Auto Watermarking</div>
-                  <div className="text-sm text-muted-foreground">Automatically watermark uploads</div>
+              <div className="flex items-start sm:items-center justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-sm sm:text-base">Auto Watermarking</div>
+                  <div className="text-xs sm:text-sm text-muted-foreground">Automatically watermark uploads</div>
                 </div>
-                <Switch defaultChecked />
+                <Switch defaultChecked className="shrink-0" />
               </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-medium">AI Fingerprinting</div>
-                  <div className="text-sm text-muted-foreground">Create digital signatures for all assets</div>
+              <div className="flex items-start sm:items-center justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-sm sm:text-base">AI Fingerprinting</div>
+                  <div className="text-xs sm:text-sm text-muted-foreground">Create digital signatures for all assets</div>
                 </div>
-                <Switch defaultChecked />
+                <Switch defaultChecked className="shrink-0" />
               </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-medium">Automated Takedown</div>
-                  <div className="text-sm text-muted-foreground">Auto-request removal of detected content</div>
+              <div className="flex items-start sm:items-center justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-sm sm:text-base">Automated Takedown</div>
+                  <div className="text-xs sm:text-sm text-muted-foreground">Auto-request removal of detected content</div>
                 </div>
-                <Switch checked={autoTakedown} onCheckedChange={setAutoTakedown} />
+                <Switch checked={autoTakedown} onCheckedChange={setAutoTakedown} className="shrink-0" />
               </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-medium">Continuous Monitoring</div>
-                  <div className="text-sm text-muted-foreground">24/7 platform scanning</div>
+              <div className="flex items-start sm:items-center justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-sm sm:text-base">Continuous Monitoring</div>
+                  <div className="text-xs sm:text-sm text-muted-foreground">24/7 platform scanning</div>
                 </div>
-                <Switch defaultChecked />
+                <Switch defaultChecked className="shrink-0" />
               </div>
             </CardContent>
           </Card>
@@ -334,6 +387,7 @@ export default function Settings() {
                 id="settings-update-password"
                 onClick={handlePasswordChange}
                 disabled={passwordLoading || !currentPassword || !newPassword || !confirmPassword || newPassword !== confirmPassword}
+                className="w-full sm:w-auto"
               >
                 {passwordLoading ? (
                   <><Loader2 className="h-4 w-4 animate-spin mr-2" /> Updating...</>

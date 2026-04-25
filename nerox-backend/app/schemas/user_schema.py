@@ -82,6 +82,10 @@ class RegisterResponse(BaseModel):
         ...,
         description="Echo of the registered e-mail address.",
     )
+    organization_id: Optional[str] = Field(
+        default=None,
+        description="Organization assigned at signup.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +162,9 @@ class ProfileResponse(BaseModel):
     email: EmailStr = Field(..., description="E-mail address.")
     company_name: str = Field(default="", description="Company name.")
     created_at: Optional[str] = Field(None, description="Account creation timestamp (ISO 8601).")
+    organization_id: Optional[str] = Field(None, description="Current organization ID.")
+    role: str = Field(default="owner", description="Role in organization: owner/admin/member.")
+    organization_plan: Optional[str] = Field(default="free", description="Current organization plan.")
 
 
 class ProfileUpdateRequest(BaseModel):

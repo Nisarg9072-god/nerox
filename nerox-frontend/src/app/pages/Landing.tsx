@@ -1,9 +1,11 @@
 import { motion } from 'motion/react';
-import { Shield, Eye, AlertTriangle, BarChart3, Lock, Zap, Check, ArrowRight } from 'lucide-react';
+import { Shield, Eye, AlertTriangle, BarChart3, Check, ArrowRight, Menu, X } from 'lucide-react';
 import { Link } from 'react-router';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import { ThemeToggle } from '../components/ThemeToggle';
+import { useState } from 'react';
+import { AnimatePresence } from 'motion/react';
 
 const features = [
   {
@@ -54,34 +56,76 @@ const testimonials = [
 ];
 
 export default function Landing() {
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
   return (
     <div className="min-h-screen">
       <nav className="fixed top-0 left-0 right-0 z-50 border-b border-border/40 bg-background/80 backdrop-blur-xl">
-        <div className="container mx-auto px-6 h-16 flex items-center justify-between">
+        <div className="container mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2">
             <Shield className="h-6 w-6" />
             <span className="text-xl font-semibold">Nerox</span>
           </Link>
-          <div className="hidden md:flex items-center gap-8">
+          {/* Desktop Nav */}
+          <div className="hidden md:flex items-center gap-6 lg:gap-8">
             <Link to="/features" className="text-sm hover:text-primary transition-colors">Features</Link>
             <Link to="/demo" className="text-sm hover:text-primary transition-colors">Demo</Link>
             <Link to="/pricing" className="text-sm hover:text-primary transition-colors">Pricing</Link>
             <Link to="/about" className="text-sm hover:text-primary transition-colors">About</Link>
             <Link to="/contact" className="text-sm hover:text-primary transition-colors">Contact</Link>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
             <ThemeToggle />
-            <Link to="/login">
+            <Link to="/login" className="hidden sm:block">
               <Button variant="ghost" size="sm">Login</Button>
             </Link>
             <Link to="/register">
               <Button size="sm">Get Started</Button>
             </Link>
+            {/* Mobile hamburger */}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="md:hidden p-2 h-auto"
+              onClick={() => setMobileNavOpen(!mobileNavOpen)}
+              aria-label="Toggle navigation"
+            >
+              {mobileNavOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+            </Button>
           </div>
         </div>
+        {/* Mobile Nav Dropdown */}
+        <AnimatePresence>
+          {mobileNavOpen && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              className="md:hidden border-t border-border bg-background/95 backdrop-blur-xl overflow-hidden"
+            >
+              <div className="px-4 py-4 space-y-1">
+                {[['Features', '/features'], ['Demo', '/demo'], ['Pricing', '/pricing'], ['About', '/about'], ['Contact', '/contact']].map(([label, href]) => (
+                  <Link
+                    key={href}
+                    to={href}
+                    className="block py-2.5 px-3 text-sm rounded-lg hover:bg-accent transition-colors"
+                    onClick={() => setMobileNavOpen(false)}
+                  >
+                    {label}
+                  </Link>
+                ))}
+                <div className="pt-2 border-t border-border mt-2">
+                  <Link to="/login" className="block py-2.5 px-3 text-sm rounded-lg hover:bg-accent transition-colors" onClick={() => setMobileNavOpen(false)}>
+                    Login
+                  </Link>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </nav>
 
-      <section className="pt-32 pb-20 px-6">
+      <section className="pt-28 sm:pt-32 pb-16 sm:pb-20 px-4 sm:px-6">
         <div className="container mx-auto max-w-6xl">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -90,31 +134,31 @@ export default function Landing() {
             className="text-center"
           >
             <div className="inline-block mb-4 px-4 py-1.5 rounded-full border border-border bg-muted/50">
-              <span className="text-sm">Protect. Track. Verify.</span>
+              <span className="text-xs sm:text-sm">Protect. Track. Verify.</span>
             </div>
-            <h1 className="text-5xl md:text-7xl font-bold mb-6 bg-gradient-to-br from-foreground to-foreground/60 bg-clip-text text-transparent">
+            <h1 className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-bold mb-4 sm:mb-6 bg-gradient-to-br from-foreground to-foreground/60 bg-clip-text text-transparent leading-tight">
               AI-Powered Digital Asset Protection
             </h1>
-            <p className="text-xl text-muted-foreground mb-8 max-w-3xl mx-auto">
+            <p className="text-base sm:text-xl text-muted-foreground mb-6 sm:mb-8 max-w-3xl mx-auto px-2">
               Secure your sports media content with military-grade AI fingerprinting and invisible watermarking. Track unauthorized usage in real-time.
             </p>
-            <div className="flex items-center justify-center gap-4">
-              <Link to="/register">
-                <Button size="lg" className="gap-2">
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-4">
+              <Link to="/register" className="w-full sm:w-auto">
+                <Button size="lg" className="gap-2 w-full sm:w-auto">
                   Start Protecting Assets <ArrowRight className="h-4 w-4" />
                 </Button>
               </Link>
-              <Link to="/demo">
-                <Button size="lg" variant="outline">View Demo</Button>
+              <Link to="/demo" className="w-full sm:w-auto">
+                <Button size="lg" variant="outline" className="w-full sm:w-auto">View Demo</Button>
               </Link>
             </div>
           </motion.div>
         </div>
       </section>
 
-      <section className="py-20 px-6 bg-muted/30">
+      <section className="py-12 sm:py-20 px-4 sm:px-6 bg-muted/30">
         <div className="container mx-auto max-w-6xl">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6 sm:gap-8">
             {stats.map((stat, i) => (
               <motion.div
                 key={i}
@@ -124,21 +168,21 @@ export default function Landing() {
                 viewport={{ once: true }}
                 className="text-center"
               >
-                <div className="text-4xl font-bold mb-2">{stat.value}</div>
-                <div className="text-sm text-muted-foreground">{stat.label}</div>
+                <div className="text-2xl sm:text-4xl font-bold mb-1 sm:mb-2">{stat.value}</div>
+                <div className="text-xs sm:text-sm text-muted-foreground">{stat.label}</div>
               </motion.div>
             ))}
           </div>
         </div>
       </section>
 
-      <section className="py-20 px-6">
+      <section className="py-12 sm:py-20 px-4 sm:px-6">
         <div className="container mx-auto max-w-6xl">
-          <div className="text-center mb-16">
-            <h2 className="text-4xl font-bold mb-4">Enterprise-Grade Protection</h2>
-            <p className="text-xl text-muted-foreground">Everything you need to safeguard your digital assets</p>
+          <div className="text-center mb-10 sm:mb-16">
+            <h2 className="text-2xl sm:text-4xl font-bold mb-3 sm:mb-4">Enterprise-Grade Protection</h2>
+            <p className="text-base sm:text-xl text-muted-foreground">Everything you need to safeguard your digital assets</p>
           </div>
-          <div className="grid md:grid-cols-2 gap-8">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-8">
             {features.map((feature, i) => {
               const Icon = feature.icon;
               return (
@@ -165,13 +209,13 @@ export default function Landing() {
         </div>
       </section>
 
-      <section className="py-20 px-6 bg-muted/30">
+      <section className="py-12 sm:py-20 px-4 sm:px-6 bg-muted/30">
         <div className="container mx-auto max-w-6xl">
-          <div className="text-center mb-16">
-            <h2 className="text-4xl font-bold mb-4">Trusted by Industry Leaders</h2>
-            <p className="text-xl text-muted-foreground">See what organizations say about Nerox</p>
+          <div className="text-center mb-10 sm:mb-16">
+            <h2 className="text-2xl sm:text-4xl font-bold mb-3 sm:mb-4">Trusted by Industry Leaders</h2>
+            <p className="text-base sm:text-xl text-muted-foreground">See what organizations say about Nerox</p>
           </div>
-          <div className="grid md:grid-cols-3 gap-8">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 sm:gap-8">
             {testimonials.map((testimonial, i) => (
               <motion.div
                 key={i}
@@ -195,15 +239,15 @@ export default function Landing() {
         </div>
       </section>
 
-      <section className="py-20 px-6">
+      <section className="py-12 sm:py-20 px-4 sm:px-6">
         <div className="container mx-auto max-w-4xl text-center">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
           >
-            <h2 className="text-4xl font-bold mb-4">Ready to Protect Your Assets?</h2>
-            <p className="text-xl text-muted-foreground mb-8">
+            <h2 className="text-2xl sm:text-4xl font-bold mb-3 sm:mb-4">Ready to Protect Your Assets?</h2>
+            <p className="text-base sm:text-xl text-muted-foreground mb-6 sm:mb-8">
               Join leading sports media organizations using Nerox
             </p>
             <Link to="/register">
@@ -215,10 +259,10 @@ export default function Landing() {
         </div>
       </section>
 
-      <footer className="border-t border-border py-12 px-6">
+      <footer className="border-t border-border py-10 sm:py-12 px-4 sm:px-6">
         <div className="container mx-auto max-w-6xl">
-          <div className="grid md:grid-cols-4 gap-8 mb-8">
-            <div>
+          <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-4 gap-6 sm:gap-8 mb-8">
+            <div className="col-span-2 sm:col-span-1">
               <div className="flex items-center gap-2 mb-4">
                 <Shield className="h-5 w-5" />
                 <span className="font-semibold">Nerox</span>

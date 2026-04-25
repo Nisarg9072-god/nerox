@@ -34,6 +34,7 @@ Switching local → S3
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import tempfile
 from pathlib import Path
 
 from fastapi import UploadFile
@@ -113,6 +114,14 @@ class StorageBackend(ABC):
         """
         ...
 
+    @abstractmethod
+    def get_processing_path(self, file_path: str) -> str:
+        """
+        Return a local path suitable for CPU pipelines.
+        Local backend returns original path; remote backends can download a temp copy.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Local filesystem implementation
@@ -181,6 +190,9 @@ class LocalStorageBackend(StorageBackend):
         filename = Path(file_path).name
         return f"{self.base_url}/uploads/{filename}"
 
+    def get_processing_path(self, file_path: str) -> str:
+        return file_path
+
 
 # ---------------------------------------------------------------------------
 # AWS S3 stub — implement when ready
@@ -209,6 +221,8 @@ class S3StorageBackend(StorageBackend):
                 "s3",
                 region_name=settings.S3_REGION,
                 endpoint_url=self.endpoint,
+                aws_access_key_id=settings.AWS_ACCESS_KEY or None,
+                aws_secret_access_key=settings.AWS_SECRET_KEY or None,
             )
         except Exception as exc:
             raise RuntimeError(f"S3 backend init failed: {exc}") from exc
@@ -220,18 +234,48 @@ class S3StorageBackend(StorageBackend):
         data = await upload_file.read()
         if len(data) > max_bytes:
             raise ValueError(f"File exceeds the maximum allowed size of {settings.MAX_FILE_SIZE_MB} MB.")
-        self._client.put_object(Bucket=self.bucket, Key=unique_filename, Body=data, ContentType=upload_file.content_type or "application/octet-stream")
+        self.upload_file_to_s3(unique_filename, data, upload_file.content_type or "application/octet-stream")
+        logger.info("Uploaded to S3: %s", unique_filename)
+        if settings.STORAGE_MODE.lower() == "hybrid":
+            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+            local_path = UPLOAD_DIR / unique_filename
+            local_path.write_bytes(data)
+            return str(local_path.resolve()), len(data)
         return unique_filename, len(data)
+
+    def upload_file_to_s3(self, key: str, data: bytes, content_type: str) -> None:
+        self._client.put_object(Bucket=self.bucket, Key=key, Body=data, ContentType=content_type)
 
     def delete_file(self, file_path: str) -> None:
         self._client.delete_object(Bucket=self.bucket, Key=file_path)
 
     def get_file_url(self, file_path: str) -> str:
+        # Backward compatibility for legacy local files in hybrid mode.
+        if Path(file_path).exists() and settings.STORAGE_MODE.lower() != "hybrid":
+            filename = Path(file_path).name
+            return f"{settings.BASE_URL.rstrip('/')}/uploads/{filename}"
+        key = Path(file_path).name if Path(file_path).exists() else file_path
         if self.public_base:
-            return f"{self.public_base}/{file_path}"
+            return f"{self.public_base}/{key}"
         if self.endpoint:
-            return f"{self.endpoint.rstrip('/')}/{self.bucket}/{file_path}"
-        return f"https://{self.bucket}.s3.{settings.S3_REGION}.amazonaws.com/{file_path}"
+            return f"{self.endpoint.rstrip('/')}/{self.bucket}/{key}"
+        return f"https://{self.bucket}.s3.{settings.S3_REGION}.amazonaws.com/{key}"
+
+    def generate_signed_url(self, key: str, expires_sec: int = 900) -> str:
+        return self._client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": self.bucket, "Key": key},
+            ExpiresIn=expires_sec,
+        )
+
+    def get_processing_path(self, file_path: str) -> str:
+        # Legacy local fallback for hybrid mode.
+        if Path(file_path).exists():
+            return file_path
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=Path(file_path).suffix or ".bin")
+        tmp.close()
+        self._client.download_file(self.bucket, file_path, tmp.name)
+        return tmp.name
 
 
 # ---------------------------------------------------------------------------
@@ -253,9 +297,9 @@ def get_storage() -> StorageBackend:
     """
     global _storage
     if _storage is None:
-        stype = getattr(settings, "STORAGE_TYPE", "local").lower()
+        stype = (getattr(settings, "STORAGE_MODE", "") or getattr(settings, "STORAGE_TYPE", "local")).lower()
 
-        if stype == "s3":
+        if stype in {"s3", "hybrid"}:
             logger.info("Initialising S3StorageBackend")
             _storage = S3StorageBackend()
         else:

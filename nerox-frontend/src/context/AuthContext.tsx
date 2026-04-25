@@ -33,6 +33,9 @@ export interface AuthUser {
   email: string;
   company_name: string;   // keep snake_case alias for backward compat
   created_at: string | null;
+  organizationId?: string | null;
+  role?: 'owner' | 'admin' | 'member';
+  organizationPlan?: 'free' | 'pro' | 'enterprise';
 }
 
 type AuthContextType = {
@@ -56,6 +59,9 @@ function profileToUser(profile: UserProfile): AuthUser {
     company_name: profile.company_name || '',
     email: profile.email,
     created_at: profile.created_at,
+    organizationId: profile.organization_id ?? null,
+    role: profile.role ?? 'owner',
+    organizationPlan: profile.organization_plan ?? 'free',
   };
 }
 

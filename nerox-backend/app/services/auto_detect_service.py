@@ -156,13 +156,17 @@ def run_detection_job(job_id: str) -> None:
         if not media_items:
             db[DETECTION_JOBS_COL].update_one(
                 {"_id": job_oid},
-                {"$set": {"warning": "No media found (empty results or blocked site)."}},
+                {"$set": {"warning": "No media found (possible site block or query mismatch)"}},
             )
             _complete_job(db, job_oid, 0, 0, [], None)
             return
 
         # Cap to configured limit
         media_items = media_items[:settings.AUTO_SCAN_MAX_ITEMS]
+        logger.info(
+            "Ingestion extracted %d items — job_id=%s source=%s",
+            len(media_items), job_id, source,
+        )
         logger.info(
             "Ingestion complete — job_id=%s source=%s extracted=%d",
             job_id, source, len(media_items),

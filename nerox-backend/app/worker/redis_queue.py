@@ -27,6 +27,22 @@ def _queue() -> Queue:
     return Queue(settings.RQ_QUEUE_NAME, connection=_redis_conn())
 
 
+def _mark_inflight_jobs_failed(reason: str) -> int:
+    db = get_sync_database()
+    res = db[JOBS_COL].update_many(
+        {"status": {"$in": ["pending", "processing"]}},
+        {
+            "$set": {
+                "status": "failed",
+                "last_error": reason,
+                "completed_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+    return int(res.modified_count)
+
+
 def _resolve_callable(module_name: str, qualname: str) -> Callable[..., Any]:
     module = importlib.import_module(module_name)
     fn = module
@@ -116,7 +132,15 @@ class RedisTaskQueue:
         timeout_sec: Optional[float] = None,
         **kwargs: Any,
     ) -> str:
-        queue = _queue()
+        try:
+            queue = _queue()
+        except Exception as exc:
+            updated = _mark_inflight_jobs_failed(f"Redis unavailable: {exc}")
+            logger.critical(
+                "redis_unavailable_enqueue",
+                extra={"event": "redis_unavailable_enqueue", "error": str(exc), "jobs_marked_failed": updated},
+            )
+            raise
         retries = settings.MAX_JOB_RETRIES if max_retries is None else max_retries
 
         job = queue.enqueue(
@@ -157,8 +181,31 @@ class RedisTaskQueue:
         return db[JOBS_COL].find_one({"job_id": task_id}, {"_id": 0})
 
     def metrics(self) -> dict[str, Any]:
-        queue = _queue()
-        workers = Worker.all(connection=_redis_conn())
+        try:
+            conn = _redis_conn()
+            t0 = time.perf_counter()
+            conn.ping()
+            redis_latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+            queue = Queue(settings.RQ_QUEUE_NAME, connection=conn)
+            workers = Worker.all(connection=conn)
+        except Exception as exc:
+            updated = _mark_inflight_jobs_failed(f"Redis unavailable during metrics: {exc}")
+            logger.critical(
+                "redis_unavailable_metrics",
+                extra={"event": "redis_unavailable_metrics", "error": str(exc), "jobs_marked_failed": updated},
+            )
+            return {
+                "queue_size": -1,
+                "active_workers": 0,
+                "jobs_processed": 0,
+                "jobs_failed": updated,
+                "avg_processing_time": 0.0,
+                "avg_job_time": 0.0,
+                "redis_health": "down",
+                "redis_latency_ms": None,
+                "critical": "Redis unavailable",
+            }
+
         db = get_sync_database()
         completed = db[JOBS_COL].count_documents({"status": "completed"})
         failed = db[JOBS_COL].count_documents({"status": "failed"})
@@ -167,12 +214,30 @@ class RedisTaskQueue:
             {"$group": {"_id": None, "avg": {"$avg": "$duration_ms"}}},
         ]
         dur = list(db[JOBS_COL].aggregate(dur_pipe))
+        now = int(time.time())
+        hb_keys = list(conn.scan_iter(match="nerox:worker_heartbeat:*"))
+        active_hb = 0
+        for k in hb_keys:
+            try:
+                ts_raw = conn.get(k)
+                ts = int(ts_raw.decode() if isinstance(ts_raw, bytes) else ts_raw or 0)
+                if now - ts <= 30:
+                    active_hb += 1
+            except Exception:
+                continue
+
+        active_workers = active_hb if active_hb >= 0 else len(workers)
+        if active_workers == 0:
+            logger.critical("worker_missing", extra={"event": "worker_missing", "queue": settings.RQ_QUEUE_NAME})
+
         return {
             "queue_size": queue.count,
-            "active_workers": len(workers),
+            "active_workers": active_workers,
             "jobs_processed": completed,
             "jobs_failed": failed,
             "avg_processing_time": round(dur[0]["avg"], 2) if dur else 0.0,
             "avg_job_time": round(dur[0]["avg"], 2) if dur else 0.0,
+            "redis_health": "ok",
+            "redis_latency_ms": redis_latency_ms,
         }
 

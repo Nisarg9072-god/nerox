@@ -21,6 +21,10 @@ export interface OverviewStats {
   critical_alerts: number;
   watermark_verifications: number;
   detection_rate: number;
+  scans_used?: number;
+  scans_limit?: number | null;
+  uploads_used?: number;
+  uploads_limit?: number | null;
 }
 
 export interface RiskSummary {

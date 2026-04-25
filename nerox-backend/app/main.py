@@ -16,6 +16,8 @@ Shutdown:
 
 from contextlib import asynccontextmanager
 import asyncio
+import os
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -27,7 +29,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.routes import auth, assets
 from app.api.routes import analytics as analytics_router
+from app.api.routes import billing as billing_router
 from app.api.routes import detect as detect_router
+from app.api.routes import saas as saas_router
 from app.api.routes import system as system_router
 from app.api.routes import watermark as watermark_router
 from app.api.routes import ws as ws_router
@@ -117,6 +121,14 @@ def _create_indexes() -> None:
         ("background_jobs", [("job_id", ASCENDING)],                                        "idx_bj_job_id",       True),
         ("background_jobs", [("status", ASCENDING)],                                        "idx_bj_status",       False),
         ("background_jobs", [("created_at", DESCENDING)],                                   "idx_bj_created_at",   False),
+        ("organizations", [("owner_user_id", ASCENDING)],                                   "idx_org_owner",       False),
+        ("users", [("organization_id", ASCENDING)],                                         "idx_users_org",       False),
+        ("usage", [("organization_id", ASCENDING)],                                         "idx_usage_org",       True),
+        ("api_keys", [("key", ASCENDING)],                                                  "idx_api_key",         True),
+        ("api_keys", [("organization_id", ASCENDING)],                                      "idx_api_key_org",     False),
+        ("organizations", [("stripe_customer_id", ASCENDING)],                              "idx_org_stripe_customer", False),
+        ("organizations", [("stripe_subscription_id", ASCENDING)],                          "idx_org_stripe_subscription", False),
+        ("billing_events", [("event_id", ASCENDING)],                                       "idx_billing_event_id", True),
 
         # ── Phase 2.6: Enhanced detection indexes ────────────────────────────
         ("detections", [("asset_id", ASCENDING)],                                          "idx_det_asset_id",     False),
@@ -159,6 +171,49 @@ def _create_indexes() -> None:
     logger.info("MongoDB indexes verified (Phase 2.6 — includes detection optimizations).")
 
 
+def _run_safe_saas_migration() -> None:
+    db = get_sync_database()
+    now = datetime.now(timezone.utc)
+    users = list(db["users"].find({"$or": [{"organization_id": {"$exists": False}}, {"role": {"$exists": False}}]}))
+    for user in users:
+        org_doc = {
+            "name": user.get("company_name", "Default Organization"),
+            "owner_user_id": str(user["_id"]),
+            "plan": "free",
+            "created_at": now,
+        }
+        org_id = db["organizations"].insert_one(org_doc).inserted_id
+        db["usage"].update_one(
+            {"organization_id": str(org_id)},
+            {"$setOnInsert": {"organization_id": str(org_id), "scans_used": 0, "uploads_used": 0, "last_reset": now}},
+            upsert=True,
+        )
+        db["users"].update_one(
+            {"_id": user["_id"]},
+            {"$set": {"organization_id": str(org_id), "role": "owner", "updated_at": now}},
+        )
+
+
+def _warn_if_old_process_running() -> None:
+    pid_file = ".nerox_api.pid"
+    current_pid = os.getpid()
+    try:
+        if os.path.exists(pid_file):
+            old_pid_raw = open(pid_file, "r", encoding="utf-8").read().strip()
+            if old_pid_raw.isdigit():
+                old_pid = int(old_pid_raw)
+                if old_pid != current_pid:
+                    try:
+                        os.kill(old_pid, 0)
+                        logger.warning("Detected previously running Nerox API process (pid=%s).", old_pid)
+                    except Exception:
+                        pass
+        with open(pid_file, "w", encoding="utf-8") as fh:
+            fh.write(str(current_pid))
+    except Exception as exc:
+        logger.warning("PID drift check failed: %s", exc)
+
+
 
 # ---------------------------------------------------------------------------
 # Lifespan context manager
@@ -183,7 +238,9 @@ async def lifespan(app: FastAPI):
     app.state.started_at_epoch = _time.time()
 
     await connect_to_mongo()
+    _warn_if_old_process_running()
     _create_indexes()
+    _run_safe_saas_migration()
 
     # Register main loop for thread-safe WebSocket emissions
     try:
@@ -217,6 +274,10 @@ async def lifespan(app: FastAPI):
         logger.warning("Source registry init failed: %s", exc)
 
     logger.info("Phase 2.6: Real-Time Intelligence Layer ready.")
+    logger.info("SaaS routes loaded")
+    logger.info("Billing routes loaded")
+    route_paths = sorted({getattr(r, "path", "") for r in app.router.routes})
+    logger.info("Available routes: %s", route_paths)
 
     yield
 
@@ -368,6 +429,8 @@ app.include_router(watermark_router.router,  prefix="/watermark",  tags=["Waterm
 app.include_router(analytics_router.router,  prefix="/analytics",  tags=["Analytics"])
 app.include_router(ws_router.router,         prefix="/ws",         tags=["WebSocket"])
 app.include_router(system_router.router,     prefix="/system",     tags=["System"])
+app.include_router(saas_router.router,       prefix="",            tags=["SaaS"])
+app.include_router(billing_router.router,    prefix="/billing",    tags=["Billing"])
 
 
 # ---------------------------------------------------------------------------

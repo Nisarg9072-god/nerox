@@ -28,6 +28,8 @@ import logging
 import sys
 from datetime import datetime, timezone
 
+from app.core.config import settings
+
 
 class JsonFormatter(logging.Formatter):
     """JSON formatter for structured production logs."""
@@ -75,7 +77,7 @@ def get_logger(name: str) -> logging.Logger:
         handler.setFormatter(formatter)
 
         root.addHandler(handler)
-        root.setLevel(logging.INFO)
+        root.setLevel(getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
         root.propagate = False  # suppress uvicorn's root-logger duplication
 
     return logging.getLogger(name)

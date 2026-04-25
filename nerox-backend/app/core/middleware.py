@@ -6,6 +6,7 @@ from typing import Callable
 
 from fastapi import Request, Response
 
+from app.core.config import settings
 from app.core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -16,6 +17,25 @@ def request_logging_middleware_factory() -> Callable:
         request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
         started = time.perf_counter()
         user_id = getattr(request.state, "user_id", None)
+        org_id = getattr(request.state, "organization_id", None)
+        if settings.ENFORCE_CSRF and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            auth_header = request.headers.get("authorization", "")
+            api_key = request.headers.get("x-api-key")
+            # Enforce CSRF for browser bearer-token writes. API key traffic is exempt.
+            if auth_header.lower().startswith("bearer ") and not api_key:
+                csrf_token = request.headers.get(settings.CSRF_HEADER_NAME, "")
+                if csrf_token != settings.CSRF_SECRET:
+                    logger.warning(
+                        "csrf_rejected",
+                        extra={
+                            "event": "csrf_rejected",
+                            "request_id": request_id,
+                            "endpoint": request.url.path,
+                            "method": request.method,
+                        },
+                    )
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(status_code=403, content={"error": "CSRF validation failed", "code": 403})
         try:
             response = await call_next(request)
         except Exception:
@@ -26,6 +46,7 @@ def request_logging_middleware_factory() -> Callable:
                     "event": "request_failed",
                     "request_id": request_id,
                     "user_id": user_id,
+                    "organization_id": org_id,
                     "endpoint": request.url.path,
                     "method": request.method,
                     "response_time_ms": elapsed_ms,
@@ -47,6 +68,7 @@ def request_logging_middleware_factory() -> Callable:
                 "event": "request_completed",
                 "request_id": request_id,
                 "user_id": user_id,
+                "organization_id": org_id,
                 "endpoint": request.url.path,
                 "method": request.method,
                 "status_code": response.status_code,

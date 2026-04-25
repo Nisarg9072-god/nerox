@@ -64,20 +64,20 @@ export default function Alerts() {
   };
 
   return (
-    <div className="p-6 md:p-8 space-y-8">
-      <div className="flex items-center justify-between">
+    <div className="p-4 sm:p-6 md:p-8 space-y-6 md:space-y-8">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold mb-2">Alerts Center</h1>
-          <p className="text-muted-foreground">Critical notifications and priority actions</p>
+          <h1 className="text-2xl sm:text-3xl font-bold mb-1">Alerts Center</h1>
+          <p className="text-sm sm:text-base text-muted-foreground">Critical notifications and priority actions</p>
         </div>
-        <Button variant="outline" onClick={load} disabled={loading}>
+        <Button variant="outline" onClick={load} disabled={loading} className="self-start sm:self-auto shrink-0">
           <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
           Refresh
         </Button>
       </div>
 
       {/* Summary cards */}
-      <div className="grid md:grid-cols-4 gap-6">
+      <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card><CardContent className="p-6">
           <div className="flex items-center justify-between mb-2">
             <Bell className="h-5 w-5 text-muted-foreground" />
@@ -165,30 +165,31 @@ export default function Alerts() {
                       </div>
 
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap mb-2">
-                          <h3 className="font-semibold">{meta.label}</h3>
+                        <div className="flex items-center gap-2 flex-wrap mb-1">
+                          <h3 className="font-semibold text-sm sm:text-base">{meta.label}</h3>
                           <Badge variant={meta.badge}>{alert.severity}</Badge>
-                          <Badge variant="outline">{alert.alert_type}</Badge>
+                          <Badge variant="outline" className="text-xs">{alert.alert_type}</Badge>
                         </div>
-                        <p className="text-sm text-muted-foreground mb-2">{alert.message}</p>
-                        <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                        <p className="text-sm text-muted-foreground mb-2 break-words">{alert.message}</p>
+                        <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                           <div className="flex items-center gap-1">
-                            <Shield className="h-4 w-4" />
-                            <span className="font-mono text-xs">{alert.asset_id.slice(-12)}</span>
+                            <Shield className="h-3 w-3 shrink-0" />
+                            <span className="font-mono">{alert.asset_id.slice(-12)}</span>
                           </div>
                           <div className="flex items-center gap-1">
-                            <Clock className="h-4 w-4" />
+                            <Clock className="h-3 w-3 shrink-0" />
                             {new Date(alert.triggered_at).toLocaleString()}
                           </div>
                         </div>
                       </div>
 
-                      <div className="flex gap-2 lg:shrink-0">
+                      <div className="flex gap-2 sm:shrink-0">
                         <Button
                           variant="outline"
                           size="sm"
                           disabled={resolving === alert.alert_id}
                           onClick={() => handleResolve(alert.alert_id)}
+                          className="w-full sm:w-auto"
                         >
                           {resolving === alert.alert_id ? 'Resolving…' : 'Resolve'}
                         </Button>

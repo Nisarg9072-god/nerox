@@ -169,6 +169,10 @@ async def dashboard(
             critical_alerts         = ov["critical_alerts"],
             watermark_verifications = ov["watermark_verifications"],
             detection_rate          = ov["detection_rate"],
+            scans_used              = ov.get("scans_used", 0),
+            scans_limit             = ov.get("scans_limit"),
+            uploads_used            = ov.get("uploads_used", 0),
+            uploads_limit           = ov.get("uploads_limit"),
         ),
         risk_summary   = RiskSummary(**data["risk_summary"]),
         platform_distribution = [

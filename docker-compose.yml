@@ -1,19 +1,29 @@
 version: "3.9"
 
 services:
-  mongodb:
+  mongo:
     image: mongo:7
     restart: unless-stopped
     volumes:
       - mongo_data:/data/db
     ports:
       - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   backend:
     build:
@@ -22,8 +32,13 @@ services:
     env_file:
       - ./nerox-backend/.env
     depends_on:
-      - mongodb
+      - mongo
       - redis
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 8s
+      retries: 5
     volumes:
       - uploads_data:/app/storage/uploads
     ports:
@@ -37,8 +52,11 @@ services:
     env_file:
       - ./nerox-backend/.env
     depends_on:
-      - mongodb
       - redis
+    # Backend image defines an HTTP healthcheck for port 8000, but the worker
+    # doesn't run an HTTP server. Disable to avoid "unhealthy" noise.
+    healthcheck:
+      disable: true
     volumes:
       - uploads_data:/app/storage/uploads
 
@@ -48,19 +66,8 @@ services:
     restart: unless-stopped
     depends_on:
       - backend
-
-  nginx:
-    image: nginx:stable-alpine
-    restart: unless-stopped
-    depends_on:
-      - backend
-      - frontend
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
     ports:
-      - "80:80"
-      - "443:443"
+      - "5173:80"
 
 volumes:
   mongo_data:

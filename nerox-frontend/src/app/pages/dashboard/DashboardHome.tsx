@@ -5,6 +5,7 @@ import { Badge } from '../../components/ui/badge';
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { useEffect, useState, useCallback } from 'react';
 import { analyticsService, type DashboardResponse } from '../../../services/analyticsService';
+import { saasService, type UsageResponse } from '../../../services/saasService';
 import { useWebSocket, useWsEvent } from '../../../context/WebSocketContext';
 import { toast } from 'sonner';
 import type { WsEvent } from '../../../services/wsService';
@@ -49,6 +50,7 @@ function formatFeedTime(iso: string): string {
 export default function DashboardHome() {
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [usage, setUsage] = useState<UsageResponse | null>(null);
   const { connected, wsStatus } = useWebSocket();
 
   // Live feed state
@@ -60,6 +62,7 @@ export default function DashboardHome() {
       .then(d => { if (!cancelled) setData(d); })
       .catch(() => { if (!cancelled) toast.error('Failed to load dashboard data.'); })
       .finally(() => { if (!cancelled) setLoading(false); });
+    saasService.getUsage().then(u => { if (!cancelled) setUsage(u); }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
 
@@ -116,6 +119,8 @@ export default function DashboardHome() {
         { label: 'Total Detections',    value: ov.total_detections,   icon: Eye,           change: null },
         { label: 'Critical Alerts',     value: ov.critical_alerts,    icon: AlertTriangle, change: null },
         { label: 'High-Risk Assets',    value: ov.high_risk_assets,   icon: TrendingUp,    change: null },
+        { label: 'Scans Used / Limit', value: `${usage?.scans_used ?? 0}/${usage?.scans_limit ?? '∞'}`, icon: Radar, change: null },
+        { label: 'Uploads Used / Limit', value: `${usage?.uploads_used ?? 0}/${usage?.uploads_limit ?? '∞'}`, icon: Shield, change: null },
       ]
     : [];
 
@@ -128,14 +133,14 @@ export default function DashboardHome() {
   const recentActivity = data?.recent_detections ?? [];
 
   return (
-    <div className="p-6 md:p-8 space-y-8">
-      <div className="flex items-center justify-between">
+    <div className="p-4 sm:p-6 md:p-8 space-y-6 md:space-y-8">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold mb-2">Dashboard</h1>
-          <p className="text-muted-foreground">Overview of your asset protection</p>
+          <h1 className="text-2xl sm:text-3xl font-bold mb-1">Dashboard</h1>
+          <p className="text-sm sm:text-base text-muted-foreground">Overview of your asset protection</p>
         </div>
         {/* Phase 2.6: WebSocket connection indicator */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 self-start sm:self-auto">
           {connected ? (
             <Badge variant="outline" className="gap-1.5 text-green-600 border-green-500/50">
               <Wifi className="h-3 w-3" />
@@ -151,9 +156,9 @@ export default function DashboardHome() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
         {loading
-          ? Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
+          ? Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)
           : statCards.map((stat, i) => {
               const Icon = stat.icon;
               return (
@@ -165,7 +170,9 @@ export default function DashboardHome() {
                           <Icon className="h-5 w-5 text-primary" />
                         </div>
                       </div>
-                      <div className="text-2xl font-bold mb-1">{stat.value.toLocaleString()}</div>
+                      <div className="text-2xl font-bold mb-1">
+                        {typeof stat.value === 'number' ? stat.value.toLocaleString() : stat.value}
+                      </div>
                       <div className="text-sm text-muted-foreground">{stat.label}</div>
                     </CardContent>
                   </Card>
@@ -175,23 +182,23 @@ export default function DashboardHome() {
       </div>
 
       {/* Charts + Live Feed */}
-      <div className="grid lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
         {/* Trend chart */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="lg:col-span-2">
           <Card>
             <CardHeader>
-              <CardTitle>Detection Trend</CardTitle>
+              <CardTitle className="text-base sm:text-lg">Detection Trend</CardTitle>
               <CardDescription>Last 30 days</CardDescription>
             </CardHeader>
             <CardContent>
               {loading ? (
-                <div className="h-[300px] bg-muted/30 rounded animate-pulse" />
+                <div className="h-48 sm:h-[300px] bg-muted/30 rounded animate-pulse" />
               ) : (
-                <ResponsiveContainer width="100%" height={300}>
+                <ResponsiveContainer width="100%" height={260}>
                   <AreaChart data={trendData}>
                     <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
-                    <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={d => d.slice(5)} />
-                    <YAxis />
+                    <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={d => d.slice(5)} />
+                    <YAxis tick={{ fontSize: 10 }} width={32} />
                     <Tooltip />
                     <Area type="monotone" dataKey="count" stroke="hsl(var(--primary))" fill="hsl(var(--primary))" fillOpacity={0.2} />
                   </AreaChart>
@@ -258,22 +265,22 @@ export default function DashboardHome() {
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
         <Card>
           <CardHeader>
-            <CardTitle>Detection by Platform</CardTitle>
+            <CardTitle className="text-base sm:text-lg">Detection by Platform</CardTitle>
             <CardDescription>Top platforms</CardDescription>
           </CardHeader>
           <CardContent>
             {loading ? (
-              <div className="h-[300px] bg-muted/30 rounded animate-pulse" />
+              <div className="h-48 sm:h-[300px] bg-muted/30 rounded animate-pulse" />
             ) : platformData.length === 0 ? (
-              <div className="h-[300px] flex items-center justify-center text-muted-foreground">
+              <div className="h-48 sm:h-[300px] flex items-center justify-center text-muted-foreground">
                 No detections yet
               </div>
             ) : (
-              <ResponsiveContainer width="100%" height={300}>
+              <ResponsiveContainer width="100%" height={240}>
                 <BarChart data={platformData}>
                   <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
-                  <XAxis dataKey="platform" />
-                  <YAxis />
+                  <XAxis dataKey="platform" tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} width={32} />
                   <Tooltip />
                   <Bar dataKey="count" fill="hsl(var(--primary))" radius={[8, 8, 0, 0]} />
                 </BarChart>
@@ -302,10 +309,10 @@ export default function DashboardHome() {
                 No detections yet. Upload assets and run similarity searches to see activity here.
               </div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-3">
                 {recentActivity.map((d, i) => (
-                  <div key={i} className="flex items-start gap-4 p-3 rounded-lg hover:bg-accent transition-colors">
-                    <div className={`p-2 rounded-lg ${
+                  <div key={i} className="flex items-start gap-3 p-3 rounded-lg hover:bg-accent transition-colors">
+                    <div className={`p-2 rounded-lg shrink-0 ${
                       d.risk_label === 'critical' ? 'bg-destructive/10' :
                       d.risk_label === 'high'     ? 'bg-orange-500/10' :
                       d.risk_label === 'medium'   ? 'bg-yellow-500/10' :
@@ -314,20 +321,19 @@ export default function DashboardHome() {
                       <Eye className="h-4 w-4" />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="font-medium truncate">
+                      <div className="font-medium truncate text-sm sm:text-base">
                         {d.platform_name.charAt(0).toUpperCase() + d.platform_name.slice(1)}
                         {d.watermark_verified && (
                           <span className="ml-2 text-xs bg-green-500/10 text-green-600 px-1.5 py-0.5 rounded">
-                            WM Verified
+                            WM
                           </span>
                         )}
                       </div>
-                      <div className="text-sm text-muted-foreground">
-                        Risk {d.risk_score}/100 • {d.risk_label} •{' '}
-                        {new Date(d.detected_at).toLocaleDateString()}
+                      <div className="text-xs text-muted-foreground mt-0.5">
+                        Risk {d.risk_score}/100 • {new Date(d.detected_at).toLocaleDateString()}
                       </div>
                     </div>
-                    <div className={`text-xs px-2 py-1 rounded-full ${
+                    <div className={`text-xs px-2 py-1 rounded-full shrink-0 ${
                       d.risk_label === 'critical' ? 'bg-destructive/10 text-destructive' :
                       d.risk_label === 'high'     ? 'bg-orange-500/10 text-orange-600' :
                       d.risk_label === 'medium'   ? 'bg-yellow-500/10 text-yellow-600' :

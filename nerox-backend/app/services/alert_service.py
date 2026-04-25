@@ -36,6 +36,7 @@ from bson import ObjectId
 
 from app.core.logger import get_logger
 from app.db.mongodb import get_sync_database as get_database
+from app.services.email_service import send_alert_email
 
 logger = get_logger(__name__)
 
@@ -119,6 +120,13 @@ def _create_alert(
         )
     except Exception:
         pass
+    if severity in {"high", "critical"}:
+        try:
+            user = db["users"].find_one({"_id": ObjectId(user_id)}, {"email": 1})
+            if user and user.get("email"):
+                send_alert_email(user["email"], severity, message)
+        except Exception:
+            pass
     return alert_id
 
 

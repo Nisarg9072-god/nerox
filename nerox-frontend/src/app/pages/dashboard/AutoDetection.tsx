@@ -249,19 +249,19 @@ export default function AutoDetection() {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="p-6 md:p-8 space-y-8">
+    <div className="p-4 sm:p-6 md:p-8 space-y-6 md:space-y-8">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold mb-2 flex items-center gap-3">
-            <Radar className="h-8 w-8 text-primary" />
+          <h1 className="text-2xl sm:text-3xl font-bold mb-1 flex items-center gap-2">
+            <Radar className="h-6 w-6 sm:h-8 sm:w-8 text-primary shrink-0" />
             Auto Detection
           </h1>
-          <p className="text-muted-foreground">
+          <p className="text-sm sm:text-base text-muted-foreground">
             Automatically scan external sources for unauthorized use of your assets
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 self-start sm:self-auto">
           {wsConnected ? (
             <Badge variant="outline" className="gap-1.5 text-green-600 border-green-500/50">
               <Wifi className="h-3 w-3" />
@@ -273,15 +273,15 @@ export default function AutoDetection() {
               {wsStatus === 'reconnecting' ? 'Reconnecting' : wsStatus === 'connecting' ? 'Connecting' : 'Polling'}
             </Badge>
           )}
-          <Button variant="outline" onClick={loadJobs} disabled={loading}>
-            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
+          <Button variant="outline" size="sm" onClick={loadJobs} disabled={loading}>
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''} sm:mr-2`} />
+            <span className="hidden sm:inline">Refresh</span>
           </Button>
         </div>
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         {[
           {
             label: 'Active Scans',
@@ -348,82 +348,84 @@ export default function AutoDetection() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-4">
-              <div className="w-full sm:w-44">
-                <label className="text-sm font-medium text-muted-foreground mb-2 block">
-                  Source
-                </label>
-                <Select
-                  value={source}
-                  onValueChange={(v) => setSource(v as 'youtube' | 'web')}
-                >
-                  <SelectTrigger id="auto-detect-source">
-                    <SelectValue placeholder="Select source" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="youtube">
-                      <div className="flex items-center gap-2">
-                        <Youtube className="h-4 w-4 text-red-500" />
-                        YouTube
-                      </div>
-                    </SelectItem>
-                    <SelectItem value="web">
-                      <div className="flex items-center gap-2">
-                        <Globe className="h-4 w-4 text-blue-500" />
-                        Web Scraper
-                      </div>
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="flex-1">
-                <label className="text-sm font-medium text-muted-foreground mb-2 block">
-                  {source === 'youtube' ? 'Search Keywords' : 'Page URL'}
-                </label>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    id="auto-detect-query"
-                    className="pl-10"
-                    placeholder={
-                      source === 'youtube'
-                        ? 'e.g., digital art, photography, brand assets…'
-                        : 'https://example.com/gallery'
-                    }
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleStartScan()}
-                    disabled={starting}
-                  />
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-3">
+                <div className="w-full sm:w-44 shrink-0">
+                  <label className="text-sm font-medium text-muted-foreground mb-2 block">
+                    Source
+                  </label>
+                  <Select
+                    value={source}
+                    onValueChange={(v) => setSource(v as 'youtube' | 'web')}
+                  >
+                    <SelectTrigger id="auto-detect-source">
+                      <SelectValue placeholder="Select source" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="youtube">
+                        <div className="flex items-center gap-2">
+                          <Youtube className="h-4 w-4 text-red-500" />
+                          YouTube
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="web">
+                        <div className="flex items-center gap-2">
+                          <Globe className="h-4 w-4 text-blue-500" />
+                          Web Scraper
+                        </div>
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
+
+                <div className="flex-1">
+                  <label className="text-sm font-medium text-muted-foreground mb-2 block">
+                    {source === 'youtube' ? 'Search Keywords' : 'Page URL'}
+                  </label>
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      id="auto-detect-query"
+                      className="pl-10"
+                      placeholder={
+                        source === 'youtube'
+                          ? 'e.g., digital art, photography…'
+                          : 'https://example.com/gallery'
+                      }
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleStartScan()}
+                      disabled={starting}
+                    />
+                  </div>
+                </div>
+
+                <Button
+                  id="auto-detect-start-btn"
+                  onClick={handleStartScan}
+                  disabled={starting || !query.trim()}
+                  className="h-10 px-6 gap-2 w-full sm:w-auto shrink-0"
+                >
+                  {starting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Starting…
+                    </>
+                  ) : (
+                    <>
+                      <Play className="h-4 w-4" />
+                      Start Scan
+                    </>
+                  )}
+                </Button>
               </div>
 
-              <Button
-                id="auto-detect-start-btn"
-                onClick={handleStartScan}
-                disabled={starting || !query.trim()}
-                className="h-10 px-6 gap-2"
-              >
-                {starting ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Starting…
-                  </>
-                ) : (
-                  <>
-                    <Play className="h-4 w-4" />
-                    Start Scan
-                  </>
-                )}
-              </Button>
+              <p className="text-xs text-muted-foreground">
+                {source === 'youtube'
+                  ? 'Searches YouTube for videos matching your keywords and compares thumbnails against your protected assets.'
+                  : 'Scrapes images from the given URL and compares them against your protected assets.'}
+              </p>
             </div>
-
-            <p className="text-xs text-muted-foreground mt-3">
-              {source === 'youtube'
-                ? 'Searches YouTube for videos matching your keywords and compares thumbnails against your protected assets.'
-                : 'Scrapes images from the given URL and compares them against your protected assets.'}
-            </p>
           </CardContent>
         </Card>
       </motion.div>
@@ -494,18 +496,18 @@ export default function AutoDetection() {
                           {/* Main info */}
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 flex-wrap mb-1">
-                              <span className="font-semibold truncate max-w-[280px]">
+                              <span className="font-semibold truncate max-w-[180px] sm:max-w-[280px] text-sm sm:text-base">
                                 {job.query}
                               </span>
-                              <Badge variant={cfg.variant} className="gap-1">
+                              <Badge variant={cfg.variant} className="gap-1 text-xs">
                                 <StatusIcon className={`h-3 w-3 ${isRunning ? 'animate-spin' : ''}`} />
                                 {cfg.label}
                               </Badge>
-                              <Badge variant="outline" className="capitalize">
+                              <Badge variant="outline" className="capitalize text-xs">
                                 {job.source}
                               </Badge>
                             </div>
-                            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                            <div className="flex flex-wrap items-center gap-2 sm:gap-4 text-xs text-muted-foreground">
                               <span>{timeSince(job.created_at)}</span>
                               <span>Scanned: {job.total_scanned}</span>
                               {job.matches_found > 0 && (

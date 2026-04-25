@@ -70,6 +70,9 @@ export interface UserProfile {
   company_name: string;
   email: string;
   created_at: string | null;
+  organization_id?: string | null;
+  role?: 'owner' | 'admin' | 'member';
+  organization_plan?: 'free' | 'pro' | 'enterprise';
 }
 
 // ── Service ──────────────────────────────────────────────────────────────────

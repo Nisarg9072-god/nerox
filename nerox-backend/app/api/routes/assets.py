@@ -31,7 +31,7 @@ from fastapi import (
     status,
 )
 
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_current_user, get_current_user_with_role
 from app.core.logger import get_logger
 from app.core.rate_limiter import upload_rate_limiter
 from app.db.mongodb import get_database
@@ -48,6 +48,7 @@ from app.services.fingerprint_service import create_fingerprint_record, process_
 from app.services.storage_service import get_storage
 from app.services.watermark_service import create_watermark_record, process_watermark
 from app.services.task_queue import task_queue
+from app.services.saas_service import ROLE_ADMIN, ROLE_OWNER, enforce_upload_limit, get_organization_for_user, increment_usage
 
 logger = get_logger(__name__)
 
@@ -77,7 +78,7 @@ def _doc_to_asset_item(doc: dict) -> AssetItem:
         watermark_id      = doc.get("watermark_id"),
         processed_at      = doc.get("processed_at"),
         created_at        = doc["created_at"],
-        file_url          = storage.get_file_url(doc["file_path"]),
+        file_url          = doc.get("file_url") or storage.get_file_url(doc["file_path"]),
     )
 
 
@@ -109,6 +110,9 @@ async def upload_asset(
     ),
 ) -> AssetUploadResponse:
     user_id = str(current_user["_id"])
+    org = await get_organization_for_user(current_user)
+    org_id = str(org["_id"])
+    await enforce_upload_limit(org_id, org.get("plan", "free"))
 
     # ── Rate limit ────────────────────────────────────────────────────────────
     if not upload_rate_limiter.is_allowed(user_id):
@@ -122,6 +126,7 @@ async def upload_asset(
     try:
         await validate_file(file)
     except ValueError as exc:
+        logger.warning("upload_validation_failed", extra={"event": "upload_validation_failed", "user_id": user_id, "filename": file.filename, "reason": str(exc)})
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         )
@@ -132,6 +137,8 @@ async def upload_asset(
 
     try:
         file_path, file_size = await storage.save_file(file, unique_filename)
+        file_url = storage.get_file_url(file_path)
+        processing_path = storage.get_processing_path(file_path)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc))
     except IOError as exc:
@@ -151,11 +158,13 @@ async def upload_asset(
     # ── Insert asset document (async) ─────────────────────────────────────────
     asset_doc = {
         "user_id":           user_id,
+        "organization_id":   org_id,
         "filename":          unique_filename,
         "original_filename": file.filename or unique_filename,
         "file_type":         file_type,
         "file_path":         file_path,
         "file_size":         file_size,
+        "file_url":          file_url,
         "status":            AssetStatus.PROCESSING.value,
         "fingerprint":       None,
         "fingerprint_id":    None,
@@ -211,7 +220,7 @@ async def upload_asset(
             max_retries=2,
             fingerprint_id=fingerprint_id,
             asset_id=asset_id,
-            file_path=file_path,
+            file_path=processing_path,
             file_type=file_type,
         )
         await db[FINGERPRINTS_COL].update_one(
@@ -228,7 +237,7 @@ async def upload_asset(
             watermark_doc_id=watermark_id,
             asset_id=asset_id,
             user_id=user_id,
-            file_path=file_path,
+            file_path=processing_path,
             file_type=file_type,
         )
         await db[WATERMARKS_COL].update_one(
@@ -242,6 +251,7 @@ async def upload_asset(
         asset_id, fingerprint_id, watermark_id, user_id, file.filename, file_size, file_type,
     )
 
+    await increment_usage(org_id, uploads=1)
     return AssetUploadResponse(
         message=(
             "File uploaded successfully. "
@@ -255,7 +265,7 @@ async def upload_asset(
         file_type=file_type,
         file_size=file_size,
         status=AssetStatus.PROCESSING.value,
-        file_url=storage.get_file_url(file_path),
+        file_url=file_url,
     )
 
 
@@ -389,7 +399,8 @@ async def list_assets(
     db      = get_database()
     col     = db[ASSETS_COL]
 
-    filt   = {"user_id": user_id}
+    org_id = current_user.get("organization_id")
+    filt = {"organization_id": org_id} if org_id else {"user_id": user_id}
     total  = await col.count_documents(filt)
     cursor = col.find(filt).sort("created_at", -1).skip(skip).limit(limit)
     docs   = await cursor.to_list(length=limit)
@@ -450,3 +461,23 @@ async def _fetch_and_own(db, collection: str, asset_id: str, user_id: str) -> di
             detail="Access denied. This asset does not belong to you.",
         )
     return doc
+
+
+@router.delete(
+    "/{asset_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Delete an asset (admin+)",
+)
+async def delete_asset(
+    asset_id: str,
+    current_user: Annotated[dict, Depends(get_current_user_with_role(ROLE_ADMIN, ROLE_OWNER))],
+) -> dict:
+    _require_valid_oid(asset_id)
+    db = get_database()
+    doc = await db[ASSETS_COL].find_one({"_id": ObjectId(asset_id)})
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found.")
+    if doc.get("organization_id") != current_user.get("organization_id"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+    await db[ASSETS_COL].delete_one({"_id": ObjectId(asset_id)})
+    return {"message": "Asset deleted.", "asset_id": asset_id}

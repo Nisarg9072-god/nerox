@@ -58,21 +58,21 @@ export default function Assets() {
     'text-green-500';
 
   return (
-    <div className="p-6 md:p-8 space-y-8">
-      <div className="flex items-center justify-between">
+    <div className="p-4 sm:p-6 md:p-8 space-y-6 md:space-y-8">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold mb-2">Asset Manager</h1>
-          <p className="text-muted-foreground">
+          <h1 className="text-2xl sm:text-3xl font-bold mb-1">Asset Manager</h1>
+          <p className="text-sm sm:text-base text-muted-foreground">
             {total} protected asset{total !== 1 ? 's' : ''} • AI fingerprinting + watermarking
           </p>
         </div>
-        <Button variant="outline" onClick={load} disabled={loading}>
+        <Button variant="outline" onClick={load} disabled={loading} className="self-start sm:self-auto shrink-0">
           <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
           Refresh
         </Button>
       </div>
 
-      <div className="flex flex-col md:flex-row gap-4">
+      <div className="flex flex-col sm:flex-row gap-3">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
@@ -82,16 +82,18 @@ export default function Assets() {
             onChange={(e) => setSearchTerm(e.target.value)}
           />
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 shrink-0">
           {(['all', 'image', 'video'] as const).map(t => (
             <Button
               key={t}
               variant={filterType === t ? 'default' : 'outline'}
+              size="sm"
               onClick={() => setFilterType(t)}
             >
-              {t === 'image' && <Image className="h-4 w-4 mr-2" />}
-              {t === 'video' && <Video className="h-4 w-4 mr-2" />}
-              {t.charAt(0).toUpperCase() + t.slice(1)}
+              {t === 'image' && <Image className="h-4 w-4 sm:mr-2" />}
+              {t === 'video' && <Video className="h-4 w-4 sm:mr-2" />}
+              <span className="hidden sm:inline">{t.charAt(0).toUpperCase() + t.slice(1)}</span>
+              <span className="sm:hidden">{t === 'all' ? 'All' : ''}</span>
             </Button>
           ))}
         </div>

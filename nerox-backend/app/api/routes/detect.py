@@ -41,6 +41,7 @@ from app.services.fingerprint_service import (
     generate_embedding_for_detection,
     generate_embeddings_for_detection_variants,
 )
+from app.services.saas_service import enforce_scan_limit, get_organization_for_user, increment_usage
 from app.services.vector_service import get_vector_index
 from app.core.config import settings
 
@@ -106,6 +107,9 @@ async def detect_similarity(
     6. Return matches above threshold.
     """
     user_id  = str(current_user["_id"])
+    org = await get_organization_for_user(current_user)
+    org_id = str(org["_id"])
+    await enforce_scan_limit(org_id, org.get("plan", "free"))
     logger.info("Detection started — user=%s top_k=%d", user_id, top_k)
     if not detect_rate_limiter.is_allowed(user_id):
         raise HTTPException(
@@ -224,6 +228,7 @@ async def detect_similarity(
 
     if vector_index.total == 0:
         logger.warning("detect: FAISS index is empty — no matches possible.")
+        await increment_usage(org_id, scans=1)
         return DetectionResponse(
             query_asset_id=query_asset_id,
             total_matches=0,
@@ -308,6 +313,7 @@ async def detect_similarity(
         len(matches), top_k, user_id,
     )
 
+    await increment_usage(org_id, scans=1)
     return DetectionResponse(
         query_asset_id=query_asset_id,
         total_matches=len(matches),
@@ -377,6 +383,9 @@ async def start_auto_detection(
     4. Return the job_id immediately.
     """
     user_id = str(current_user["_id"])
+    org = await get_organization_for_user(current_user)
+    org_id = str(org["_id"])
+    await enforce_scan_limit(org_id, org.get("plan", "free"))
 
     # Validate source
     valid_sources = {"youtube", "web"}
@@ -418,6 +427,7 @@ async def start_auto_detection(
         job_id, task_id, settings.RQ_QUEUE_NAME, body.source, user_id,
     )
 
+    await increment_usage(org_id, scans=1)
     return StartAutoDetectResponse(
         job_id=job_id,
         status="pending",

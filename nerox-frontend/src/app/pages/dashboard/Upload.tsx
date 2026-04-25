@@ -84,19 +84,19 @@ export default function Upload() {
   const completedCount  = files.filter(f => f.status === 'completed').length;
 
   return (
-    <div className="p-6 md:p-8 space-y-8">
+    <div className="p-4 sm:p-6 md:p-8 space-y-6 md:space-y-8">
       <div>
-        <h1 className="text-3xl font-bold mb-2">Upload Assets</h1>
-        <p className="text-muted-foreground">Protect your images and videos with AI fingerprinting and watermarking</p>
+        <h1 className="text-2xl sm:text-3xl font-bold mb-1">Upload Assets</h1>
+        <p className="text-sm sm:text-base text-muted-foreground">Protect your images and videos with AI fingerprinting and watermarking</p>
       </div>
 
-      <div className="grid lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="lg:col-span-2">
           <Card>
             <CardContent className="p-0">
               {/* Drop zone */}
               <div
-                className={`p-12 border-2 border-dashed rounded-lg m-6 transition-all ${
+                className={`p-8 sm:p-12 border-2 border-dashed rounded-lg m-4 sm:m-6 transition-all ${
                   dragging ? 'border-primary bg-primary/5' : 'border-border'
                 }`}
                 onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
@@ -104,11 +104,11 @@ export default function Upload() {
                 onDrop={handleDrop}
               >
                 <div className="text-center">
-                  <div className="inline-flex p-4 rounded-full bg-primary/10 mb-4">
-                    <UploadIcon className="h-8 w-8 text-primary" />
+                  <div className="inline-flex p-3 sm:p-4 rounded-full bg-primary/10 mb-3 sm:mb-4">
+                    <UploadIcon className="h-6 w-6 sm:h-8 sm:w-8 text-primary" />
                   </div>
-                  <h3 className="text-xl font-semibold mb-2">Drop files here</h3>
-                  <p className="text-muted-foreground mb-6">or click to browse</p>
+                  <h3 className="text-lg sm:text-xl font-semibold mb-1 sm:mb-2">Drop files here</h3>
+                  <p className="text-sm text-muted-foreground mb-4 sm:mb-6">or click to browse</p>
                   <label>
                     <input
                       type="file"
@@ -117,9 +117,9 @@ export default function Upload() {
                       className="hidden"
                       onChange={handleFileSelect}
                     />
-                    <Button asChild><span>Select Files</span></Button>
+                    <Button asChild size="sm"><span>Select Files</span></Button>
                   </label>
-                  <p className="text-sm text-muted-foreground mt-4">Supported: JPG, PNG, MP4, MOV (Max 50MB)</p>
+                  <p className="text-xs text-muted-foreground mt-3">Supported: JPG, PNG, MP4, MOV (Max 50MB)</p>
                 </div>
               </div>
 

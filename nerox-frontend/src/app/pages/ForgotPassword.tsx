@@ -41,8 +41,8 @@ export default function ForgotPassword() {
             <Shield className="h-8 w-8 text-primary" />
             <span className="text-2xl font-bold">Nerox</span>
           </div>
-          <h1 className="text-2xl font-bold">Forgot Password</h1>
-          <p className="text-muted-foreground mt-2">
+          <h1 className="text-xl sm:text-2xl font-bold">Forgot Password</h1>
+          <p className="text-sm sm:text-base text-muted-foreground mt-2">
             {submitted
               ? 'Check your email for reset instructions'
               : "Enter your email and we'll send you a reset link"}
@@ -72,6 +72,7 @@ export default function ForgotPassword() {
                   </p>
                   <Button
                     variant="outline"
+                    className="w-full sm:w-auto"
                     onClick={() => {
                       setSubmitted(false);
                       setEmail('');

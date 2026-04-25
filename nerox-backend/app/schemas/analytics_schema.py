@@ -26,6 +26,10 @@ class OverviewStats(BaseModel):
     critical_alerts:        int   = Field(..., description="Unresolved critical-severity alerts.")
     watermark_verifications: int  = Field(..., description="Detections where watermark was verified.")
     detection_rate:         float = Field(..., description="Average detections per asset (to 2 dp).")
+    scans_used:             int   = Field(default=0, description="Organization scans used in current cycle.")
+    scans_limit:            Optional[int] = Field(default=None, description="Organization scan limit for current plan.")
+    uploads_used:           int   = Field(default=0, description="Organization uploads used in current cycle.")
+    uploads_limit:          Optional[int] = Field(default=None, description="Organization upload limit for current plan.")
 
 
 class RiskSummary(BaseModel):

@@ -60,13 +60,13 @@ export default function Verification() {
   const reset = () => { setFile(null); setResult(null); setProgress(0); };
 
   return (
-    <div className="p-6 md:p-8 space-y-8">
+    <div className="p-4 sm:p-6 md:p-8 space-y-6 md:space-y-8">
       <div>
-        <h1 className="text-3xl font-bold mb-2">Watermark Verification</h1>
-        <p className="text-muted-foreground">Verify ownership of suspicious media files via DCT watermark extraction</p>
+        <h1 className="text-2xl sm:text-3xl font-bold mb-1">Watermark Verification</h1>
+        <p className="text-sm sm:text-base text-muted-foreground">Verify ownership of suspicious media files via DCT watermark extraction</p>
       </div>
 
-      <div className="grid lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="lg:col-span-2">
           <Card>
             <CardHeader>
@@ -76,12 +76,12 @@ export default function Verification() {
             <CardContent>
               <div className="space-y-6">
                 {/* Drop zone */}
-                <div className="border-2 border-dashed border-border rounded-lg p-12 text-center">
-                  <div className="inline-flex p-4 rounded-full bg-primary/10 mb-4">
-                    <UploadIcon className="h-8 w-8 text-primary" />
+                <div className="border-2 border-dashed border-border rounded-lg p-8 sm:p-12 text-center">
+                  <div className="inline-flex p-3 sm:p-4 rounded-full bg-primary/10 mb-3 sm:mb-4">
+                    <UploadIcon className="h-6 w-6 sm:h-8 sm:w-8 text-primary" />
                   </div>
-                  <h3 className="text-lg font-semibold mb-2">Select suspicious media file</h3>
-                  <p className="text-sm text-muted-foreground mb-6">
+                  <h3 className="text-base sm:text-lg font-semibold mb-1 sm:mb-2">Select suspicious media file</h3>
+                  <p className="text-xs sm:text-sm text-muted-foreground mb-4 sm:mb-6">
                     Upload the suspicious file to verify ownership
                   </p>
                   <label>
@@ -91,7 +91,7 @@ export default function Verification() {
                       className="hidden"
                       onChange={handleFileSelect}
                     />
-                    <Button asChild><span>Choose File</span></Button>
+                    <Button asChild size="sm"><span>Choose File</span></Button>
                   </label>
                 </div>
 
@@ -161,10 +161,10 @@ export default function Verification() {
                     </div>
 
                     {result.verified && (
-                      <div className="grid md:grid-cols-3 gap-4 mb-4">
-                        <div className="p-4 rounded-lg bg-background">
-                          <div className="text-sm text-muted-foreground mb-1">Confidence</div>
-                          <div className="text-2xl font-bold">
+                      <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 gap-3 sm:gap-4 mb-4">
+                        <div className="p-3 sm:p-4 rounded-lg bg-background">
+                          <div className="text-xs sm:text-sm text-muted-foreground mb-1">Confidence</div>
+                          <div className="text-xl sm:text-2xl font-bold">
                             {Math.round(result.confidence * 100)}%
                           </div>
                           <div className="text-xs text-muted-foreground capitalize">
@@ -173,27 +173,27 @@ export default function Verification() {
                         </div>
                         {result.ownership && (
                           <>
-                            <div className="p-4 rounded-lg bg-background">
-                              <div className="text-sm text-muted-foreground mb-1">Asset ID</div>
-                              <div className="font-mono text-sm break-all">{result.ownership.asset_id.slice(-12)}</div>
+                            <div className="p-3 sm:p-4 rounded-lg bg-background">
+                              <div className="text-xs sm:text-sm text-muted-foreground mb-1">Asset ID</div>
+                              <div className="font-mono text-xs break-all">{result.ownership.asset_id.slice(-12)}</div>
                             </div>
-                            <div className="p-4 rounded-lg bg-background">
-                              <div className="text-sm text-muted-foreground mb-1">Watermark Token</div>
+                            <div className="p-3 sm:p-4 rounded-lg bg-background col-span-2 sm:col-span-1">
+                              <div className="text-xs sm:text-sm text-muted-foreground mb-1">WM Token</div>
                               <div className="font-mono text-xs break-all text-muted-foreground">
                                 {result.wm_token_detected?.slice(0, 16)}…
                               </div>
                             </div>
                           </>
                         )}
-                        <div className="p-4 rounded-lg bg-background">
-                          <div className="text-sm text-muted-foreground mb-1">Method</div>
+                        <div className="p-3 sm:p-4 rounded-lg bg-background">
+                          <div className="text-xs sm:text-sm text-muted-foreground mb-1">Method</div>
                           <div className="font-semibold text-sm">{result.watermark_method}</div>
                         </div>
                       </div>
                     )}
 
-                    <div className="flex gap-3">
-                      <Button onClick={reset} variant="outline">Verify Another File</Button>
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <Button onClick={reset} variant="outline" className="w-full sm:w-auto">Verify Another File</Button>
                     </div>
                   </div>
                 )}

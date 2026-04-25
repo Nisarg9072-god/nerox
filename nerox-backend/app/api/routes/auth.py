@@ -39,6 +39,8 @@ from app.core.security import (
     verify_password,
 )
 from app.db.mongodb import get_database
+from app.services.email_service import send_password_reset_email, send_welcome_email
+from app.services.saas_service import create_default_organization_for_user, ROLE_OWNER
 from app.schemas.user_schema import (
     ErrorDetail,
     ForgotPasswordRequest,
@@ -94,12 +96,22 @@ async def get_me(
 async def get_profile(
     current_user: dict = Depends(get_current_user),
 ) -> ProfileResponse:
+    db = get_database()
+    plan = "free"
+    org_id = current_user.get("organization_id")
+    if org_id:
+        org_doc = await db["organizations"].find_one({"_id": ObjectId(org_id)})
+        if org_doc:
+            plan = org_doc.get("plan", "free")
     return ProfileResponse(
         id=str(current_user["_id"]),
         name=current_user.get("name", current_user.get("company_name", "")),
         email=current_user.get("email", ""),
         company_name=current_user.get("company_name", ""),
         created_at=current_user.get("created_at", "").isoformat() if current_user.get("created_at") else None,
+        organization_id=current_user.get("organization_id"),
+        role=current_user.get("role", "owner"),
+        organization_plan=plan,
     )
 
 
@@ -147,12 +159,21 @@ async def update_profile(
     updated = await db[USERS_COLLECTION].find_one({"_id": user_id})
     logger.info("Profile updated — user_id: %s", user_id)
 
+    org_plan = "free"
+    if updated.get("organization_id"):
+        org_doc = await db["organizations"].find_one({"_id": ObjectId(updated["organization_id"])})
+        if org_doc:
+            org_plan = org_doc.get("plan", "free")
+
     return ProfileResponse(
         id=str(updated["_id"]),
         name=updated.get("name", updated.get("company_name", "")),
         email=updated.get("email", ""),
         company_name=updated.get("company_name", ""),
         created_at=updated.get("created_at", "").isoformat() if updated.get("created_at") else None,
+        organization_id=updated.get("organization_id"),
+        role=updated.get("role", "owner"),
+        organization_plan=org_plan,
     )
 
 
@@ -273,6 +294,12 @@ async def forgot_password(payload: ForgotPasswordRequest) -> ForgotPasswordRespo
             raw_token,
             expiry.isoformat(),
             raw_token,
+        )
+        reset_url = f"http://localhost:5173/reset-password?token={raw_token}"
+        send_password_reset_email(
+            to_email=user_doc["email"],
+            company_name=user_doc.get("company_name", "Nerox user"),
+            reset_url=reset_url,
         )
     else:
         # Don't reveal whether the email exists — constant response
@@ -426,12 +453,18 @@ async def register_user(payload: RegisterRequest) -> RegisterResponse:
             detail="An unexpected error occurred. Please try again later.",
         )
 
-    logger.info("New user registered — id: %s, email: %s", result.inserted_id, payload.email)
+    org_id = await create_default_organization_for_user(
+        user_id=result.inserted_id,
+        company_name=payload.company_name.strip(),
+    )
+    logger.info("New user registered — id: %s, email: %s org=%s", result.inserted_id, payload.email, org_id)
+    send_welcome_email(payload.email, payload.company_name.strip())
 
     return RegisterResponse(
         message="User registered successfully.",
         user_id=str(result.inserted_id),
         email=payload.email,
+        organization_id=str(org_id),
     )
 
 
@@ -498,6 +531,19 @@ async def login_user(payload: LoginRequest) -> TokenResponse:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This account has been deactivated. Please contact support.",
         )
+
+    # Runtime alignment fallback: ensure org + role always exist.
+    if not user_doc.get("organization_id") or not user_doc.get("role"):
+        org_id = await create_default_organization_for_user(
+            user_id=user_doc["_id"],
+            company_name=user_doc.get("company_name", "Default Organization"),
+        )
+        await users.update_one(
+            {"_id": user_doc["_id"]},
+            {"$set": {"organization_id": str(org_id), "role": ROLE_OWNER, "updated_at": datetime.now(timezone.utc)}},
+        )
+        user_doc["organization_id"] = str(org_id)
+        user_doc["role"] = ROLE_OWNER
 
     # --- 4. Issue JWTs ---
     user_id = str(user_doc["_id"])

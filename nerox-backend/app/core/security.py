@@ -15,6 +15,7 @@ from typing import Any
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+import bcrypt
 
 from app.core.config import settings
 
@@ -34,7 +35,17 @@ warnings.filterwarnings(
     message=".*error reading bcrypt version.*",
     category=UserWarning,
 )
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
+# NOTE:
+# passlib's bcrypt handler may probe the backend with >72-byte test inputs at
+# import time; some bcrypt backends raise ValueError instead of truncating,
+# which can crash app startup under Gunicorn.
+#
+# To keep the service bootable everywhere, we use PBKDF2-SHA256 for new hashes.
+# We still *verify* legacy bcrypt hashes directly using the bcrypt library.
+pwd_context = CryptContext(
+    schemes=["pbkdf2_sha256"],
+    deprecated="auto",
+)
 
 
 
@@ -62,6 +73,16 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     Returns:
         True if the password matches, False otherwise.
     """
+    # Legacy bcrypt hashes start with $2a$ / $2b$ / $2y$.
+    if isinstance(hashed_password, str) and hashed_password.startswith("$2"):
+        try:
+            return bcrypt.checkpw(
+                plain_password.encode("utf-8"),
+                hashed_password.encode("utf-8"),
+            )
+        except Exception:
+            return False
+
     return pwd_context.verify(plain_password, hashed_password)
 
 
