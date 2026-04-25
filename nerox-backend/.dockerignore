@@ -1,0 +1,49 @@
+# Python bytecode / caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test & coverage artefacts
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.log
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local environment files (secrets must NOT go into the image)
+.env
+.env.*
+!.env.example
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Local storage (large binary files that belong in S3/object storage)
+storage/
+
+# Docs / test scripts (not needed at runtime)
+README.md
+test_*.py
+check_*.py

@@ -17,12 +17,18 @@ stripe>=11.0.0
 playwright>=1.52.0
 
 # ── Phase 3: AI Fingerprinting & Detection Engine ──────────────────────────
-# Install with: pip install torch torchvision opencv-python faiss-cpu numpy
-torch>=2.0.0
-torchvision>=0.15.0
+# CPU-only PyTorch — Railway has no GPU; CUDA wheels add ~4 GB unnecessarily.
+# Pinned to exact versions for reproducible Railway builds.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2
+torchvision==0.17.2
+torchaudio==2.2.2
+
 opencv-python-headless>=4.8.0
 faiss-cpu>=1.7.4
-numpy>=1.24.0
+# Pin numpy<2 — torch==2.2.2 was compiled against NumPy 1.x ABI.
+# NumPy 2.x breaks torch, faiss, and opencv at import time.
+numpy>=1.24.0,<2.0.0
 
 # ── Phase 5: Invisible Watermarking + Ownership Trace ──────────────────────
 # Uses existing deps: opencv-python (DCT transforms), numpy, hashlib/hmac (stdlib)
