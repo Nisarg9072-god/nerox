@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import hashlib
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Deque, Dict, Optional, Set
@@ -64,6 +65,9 @@ class WebSocketManager:
         self._max_pending_per_user = 500
         self._sequence_by_user: Dict[str, int] = defaultdict(int)
         self._subscriber_task: Optional[asyncio.Task] = None
+        # Best-effort dedupe to avoid double-emitting the same event when
+        # running under multi-process servers (e.g. Gunicorn) + Redis pub/sub.
+        self._recent_event_sigs: Dict[str, Deque[str]] = defaultdict(lambda: deque(maxlen=300))
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Store the primary event loop for thread-safe broadcasts."""
@@ -190,6 +194,17 @@ class WebSocketManager:
 
     async def enqueue_event(self, user_id: str, event_type: str, data: dict) -> None:
         """Enqueue standardized event for next batch flush."""
+        try:
+            sig_src = f"{event_type}:{json.dumps(data, sort_keys=True, default=str)}"
+            sig = hashlib.sha1(sig_src.encode("utf-8")).hexdigest()
+            recent = self._recent_event_sigs[user_id]
+            if sig in recent:
+                return
+            recent.append(sig)
+        except Exception:
+            # Dedupe is best-effort; never block event delivery.
+            pass
+
         self._sequence_by_user[user_id] += 1
         seq = self._sequence_by_user[user_id]
         evt = {
@@ -246,10 +261,14 @@ def enqueue_event_sync(user_id: str, event_type: str, data: dict) -> None:
             _publish_event_to_redis(user_id=user_id, event_type=event_type, data=data)
             return
         if loop.is_running():
-            asyncio.run_coroutine_threadsafe(
-                ws_manager.enqueue_event(user_id, event_type, data),
-                loop,
-            )
+            # Gunicorn typically runs multiple worker processes. WebSocket connections
+            # live in only one process, while events may be emitted from any other.
+            # We *only* publish to Redis here, and let the subscriber loop deliver
+            # the event to whatever process currently holds the WS connection.
+            #
+            # Avoid also enqueuing directly in this process; otherwise the same
+            # process will receive the event twice (direct enqueue + Redis echo).
+            _publish_event_to_redis(user_id=user_id, event_type=event_type, data=data)
         else:
             _publish_event_to_redis(user_id=user_id, event_type=event_type, data=data)
     except Exception as exc:

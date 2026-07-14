@@ -679,8 +679,20 @@ def _complete_job(
     results: List[dict],
     error: Optional[str],
 ) -> None:
-    """Mark a detection job as completed."""
-    status = "completed" if error is None else "failed"
+    """Mark a detection job as completed.
+
+    A timeout with partial results is still 'completed' — the job ran and
+    produced data. Only an unhandled exception sets status='failed'.
+    If error is a timeout message we store the warning but keep status=completed.
+    """
+    is_timeout = error and "timed out" in error.lower()
+    if error is None:
+        status = "completed"
+    elif is_timeout:
+        # Timeout with partial results — job ran, just hit time cap
+        status = "completed"
+    else:
+        status = "failed"
     db[DETECTION_JOBS_COL].update_one(
         {"_id": job_oid},
         {"$set": {

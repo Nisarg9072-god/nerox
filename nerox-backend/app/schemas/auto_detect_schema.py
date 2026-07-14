@@ -80,6 +80,7 @@ class DetectionJobItem(BaseModel):
     started_at:    Optional[str]  = None
     completed_at:  Optional[str]  = None
     error:         Optional[str]  = None
+    warning:       Optional[str]  = None  # e.g. "No media found (possible site block)"
     created_at:    str            = Field(..., description="ISO timestamp.")
 
 
@@ -103,4 +104,5 @@ class DetectionJobDetailResponse(BaseModel):
     started_at:    Optional[str]  = None
     completed_at:  Optional[str]  = None
     error:         Optional[str]  = None
+    warning:       Optional[str]  = None  # e.g. "No media found (possible site block)"
     created_at:    str

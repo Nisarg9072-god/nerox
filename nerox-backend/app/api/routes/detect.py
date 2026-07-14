@@ -290,13 +290,15 @@ async def detect_similarity(
     # ── Phase 6: Log each match as a detection record ─────────────────────────
     for m in raw_matches:
         match_asset_id = m.get("asset_id", "")
-        match_user_id  = m.get("user_id",  user_id)
+        # Detections created by /detect belong to the requesting user (the one
+        # protecting/searching their asset). The matched asset may belong to a
+        # different user, but that should not redirect ownership of the detection.
         owner_asset_id = query_asset_id or match_asset_id
         try:
             create_detection(
                 asset_id         = owner_asset_id,
                 matched_asset_id = match_asset_id,
-                user_id          = match_user_id,
+                user_id          = user_id,
                 source_type      = "detect",
                 similarity_score = m.get("similarity", 0.0),
                 platform_name    = m.get("platform_name", "unknown"),
@@ -351,6 +353,7 @@ def _job_doc_to_item(doc: dict) -> DetectionJobItem:
         started_at=doc["started_at"].isoformat() if doc.get("started_at") else None,
         completed_at=doc["completed_at"].isoformat() if doc.get("completed_at") else None,
         error=doc.get("error"),
+        warning=doc.get("warning"),
         created_at=doc["created_at"].isoformat() if doc.get("created_at") else "",
     )
 
@@ -532,5 +535,6 @@ async def get_detection_job(
         started_at=doc["started_at"].isoformat() if doc.get("started_at") else None,
         completed_at=doc["completed_at"].isoformat() if doc.get("completed_at") else None,
         error=doc.get("error"),
+        warning=doc.get("warning"),
         created_at=doc["created_at"].isoformat() if doc.get("created_at") else "",
     )

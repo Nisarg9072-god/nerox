@@ -43,8 +43,11 @@ from app.services.storage_service import ensure_upload_dir, UPLOAD_DIR
 
 logger = get_logger(__name__)
 
-# Upload directory must exist before StaticFiles is mounted (module load time)
+# Upload and temp directories must exist before StaticFiles is mounted (module load time)
 ensure_upload_dir()
+# Also pre-create temp dir so first detect/auto-detect job never hits FileNotFoundError
+from pathlib import Path as _Path
+_Path("storage/temp").mkdir(parents=True, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +356,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 allowed_hosts = [h.strip() for h in settings.ALLOWED_HOSTS.split(",") if h.strip()]
-if allowed_hosts:
+# In non-production (dev/Docker local), add wildcard to avoid TrustedHost 400 errors
+# from Docker internal hostnames (e.g. "backend", "0.0.0.0", machine IP).
+if settings.ENVIRONMENT.lower() != "production":
+    allowed_hosts = ["*"]
+elif allowed_hosts:
+    # In production always allow localhost variants to not break health checks
+    _extra = {"localhost", "127.0.0.1", "0.0.0.0"}
+    allowed_hosts = list(set(allowed_hosts) | _extra)
+if allowed_hosts and allowed_hosts != ["*"]:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 app.middleware("http")(request_logging_middleware_factory())
 
@@ -461,10 +472,18 @@ async def health_check() -> dict:
         wm_total = -1
         wm_completed = -1
 
+    # Redis health should be a real ping (not just "can we compute metrics").
+    try:
+        import redis as _redis
+        _redis.Redis.from_url(settings.REDIS_URL).ping()
+        redis_ok = True
+    except Exception:
+        redis_ok = False
+
+    # Worker status is derived from queue metrics (best-effort; may degrade if Redis is down)
     try:
         from app.services.task_queue import task_queue
         metrics = task_queue.metrics()
-        redis_ok = True
         workers_ok = metrics.get("active_workers", 0) > 0
     except Exception:
         metrics = {"active_workers": 0}

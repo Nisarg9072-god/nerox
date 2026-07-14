@@ -61,6 +61,15 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# ---------------------------------------------------------------------------
+# Constants — must be defined before any endpoint that uses them
+# ---------------------------------------------------------------------------
+USERS_COLLECTION = "users"
+
+# Pre-computed dummy hash for constant-time login (user-enumeration protection)
+# Generated at import time so it is always a structurally valid bcrypt hash.
+_DUMMY_HASH: str = hash_password("__nerox_dummy_password_for_timing__")
+
 
 # ---------------------------------------------------------------------------
 # GET /auth/me  (legacy — kept for backward compatibility)
@@ -369,16 +378,8 @@ async def reset_password(payload: ResetPasswordRequest) -> ResetPasswordResponse
     return ResetPasswordResponse()
 
 
-# ---------------------------------------------------------------------------
-# Pre-computed dummy hash for constant-time login (user-enumeration protection)
-# Generated at import time so it is always a structurally valid bcrypt hash.
-# ---------------------------------------------------------------------------
-_DUMMY_HASH: str = hash_password("__nerox_dummy_password_for_timing__")
-
-# ---------------------------------------------------------------------------
-# Collection name constant — change in one place if it ever needs to move
-# ---------------------------------------------------------------------------
-USERS_COLLECTION = "users"
+# USERS_COLLECTION and _DUMMY_HASH are now defined at the top of the file
+# (after router instantiation) to avoid NameError in early endpoints.
 
 
 # ---------------------------------------------------------------------------

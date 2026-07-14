@@ -126,7 +126,15 @@ async def upload_asset(
     try:
         await validate_file(file)
     except ValueError as exc:
-        logger.warning("upload_validation_failed", extra={"event": "upload_validation_failed", "user_id": user_id, "filename": file.filename, "reason": str(exc)})
+        logger.warning(
+            "upload_validation_failed",
+            extra={
+                "event": "upload_validation_failed",
+                "user_id": user_id,
+                "upload_filename": file.filename,
+                "reason": str(exc),
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         )
